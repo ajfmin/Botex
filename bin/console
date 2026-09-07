@@ -1,0 +1,1251 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Management CLI.
+ *
+ *   php bin/console migrate
+ *   php bin/console version
+ *   php bin/console doctor
+ *
+ *   php bin/console ext:list
+ *   php bin/console ext:install <slug> [--version=x.y.z] [--dry-run] [--force]
+ *   php bin/console ext:update <slug>|--all [--dry-run] [--force]
+ *   php bin/console ext:enable <slug>
+ *   php bin/console ext:disable <slug>
+ *   php bin/console ext:remove <slug> [--keep-files]
+ *   php bin/console ext:settings <slug>
+ *   php bin/console ext:set <slug> <key> <value>
+ *   php bin/console ext:reset <slug> <key>
+ *
+ *   Remote archive (configure archive.url in config/config.php first):
+ *
+ *   php bin/console ext:remote [--fresh]
+ *   php bin/console ext:search <query>
+ *   php bin/console ext:show <slug>
+ *   php bin/console ext:outdated [--fresh]
+ *
+ *   php bin/console core:check [--fresh]
+ *   php bin/console core:update [--version=] [--dry-run] [--force]
+ *   php bin/console core:diff [--verbose]
+ *   php bin/console core:adopt
+ *   php bin/console core:rollback [<backup>]
+ *   php bin/console core:backups
+ *
+ *   php bin/console archive:ping
+ *
+ *   php bin/console wallet:show <telegram-id>
+ *   php bin/console wallet:credit <telegram-id> <amount> <reason>
+ *   php bin/console wallet:debit <telegram-id> <amount> <reason>
+ *   php bin/console wallet:refund <transaction-id> [amount]
+ *   php bin/console wallet:stats
+ *
+ *   php bin/console action:list
+ *   php bin/console action:stats
+ *   php bin/console action:prune
+ *
+ *   php bin/console jobs:work [--once] [--seconds=N]
+ *   php bin/console jobs:list
+ *   php bin/console jobs:registered
+ *   php bin/console jobs:schedule <extension> <job> [+seconds|every:seconds] [key]
+ *   php bin/console jobs:run <id>
+ *   php bin/console jobs:pause <id>
+ *   php bin/console jobs:resume <id>
+ *   php bin/console jobs:cancel <id>
+ *   php bin/console jobs:worker [--release]
+ */
+
+use Botex\Archive\Version;
+use Botex\Bot\Action\ActionStore;
+use Botex\Bot\Action\Runnables;
+use Botex\Bot\Job\JobRequest;
+use Botex\Bot\Job\Schedule;
+use Botex\Bot\Job\Worker;
+use Botex\Bot\Job\WorkerLease;
+use Botex\Botex;
+use Botex\Extension\Manager;
+use Botex\Extension\Registry;
+use Botex\Extension\SettingsFactory;
+use Botex\Remote\Catalog;
+use Botex\Remote\Client;
+use Botex\Remote\Listing;
+use Botex\Remote\NotFound;
+use Botex\Remote\RemoteException;
+use Botex\Remote\Signature;
+use Botex\Service\JobService;
+use Botex\Service\UserService;
+use Botex\Service\WalletService;
+use Botex\Update\Backup;
+use Botex\Update\CoreUpdater;
+use Botex\Update\ExtensionInstaller;
+use Botex\Update\Inventory;
+use Botex\Update\Plan;
+use Botex\Update\Result;
+
+if (PHP_SAPI !== 'cli') {
+    exit(1);
+}
+
+function fail(string $message): never
+{
+    fwrite(STDERR, $message . PHP_EOL);
+    exit(1);
+}
+
+function needSlug(?string $slug): string
+{
+    return $slug ?? fail('Usage: php bin/console <command> <slug>');
+}
+
+/**
+ * Resolves a telegram id to the internal id the wallet keys off.
+ *
+ * Does not create the user: crediting an id that never started the bot is
+ * almost always a typo, and money would sit where nobody can spend it.
+ */
+function needUserId(\Botex\Service\UserService $users, ?string $telegramId): int
+{
+    if ($telegramId === null || !ctype_digit($telegramId)) {
+        fail('Expected a numeric telegram id.');
+    }
+
+    $user = $users->find((int) $telegramId);
+
+    if (!$user) {
+        fail("No user with telegram id {$telegramId}. They have to /start first.");
+    }
+
+    return (int) $user->id;
+}
+
+/** Amounts are minor units, so only digits are accepted. */
+function needAmount(?string $raw): int
+{
+    if ($raw === null || !ctype_digit($raw) || (int) $raw <= 0) {
+        fail('Expected a positive whole amount in minor units.');
+    }
+
+    return (int) $raw;
+}
+
+function needId(?string $raw, string $usage): int
+{
+    if ($raw === null || !ctype_digit($raw)) {
+        fail($usage);
+    }
+
+    return (int) $raw;
+}
+
+/** Reads --name=value out of argv, or null when it is not there. */
+function flagValue(array $argv, string $name): ?string
+{
+    foreach ($argv as $arg) {
+        if (str_starts_with($arg, "--{$name}=")) {
+            return substr($arg, strlen($name) + 3);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Prints a plan and says whether it may be applied.
+ *
+ * Every mutating archive command runs this before touching the disk, so
+ * --dry-run and the real thing show the operator exactly the same summary.
+ */
+function printPlan(Plan $plan, bool $verbose = false): void
+{
+    echo $plan->describe() . PHP_EOL;
+
+    $lines = $plan->lines($verbose);
+
+    if ($lines !== []) {
+        echo PHP_EOL . implode(PHP_EOL, $lines) . PHP_EOL;
+    }
+
+    if ($plan->problems() !== []) {
+        echo PHP_EOL;
+
+        foreach ($plan->problems() as $problem) {
+            echo '  ! ' . $problem . PHP_EOL;
+        }
+    }
+
+    if ($plan->blocked() !== []) {
+        echo PHP_EOL . '  These paths are outside the core surface and will never be written.' . PHP_EOL;
+    }
+}
+
+/** Prints what an install or update did. */
+function printResult(Result $result): void
+{
+    echo implode(PHP_EOL, $result->lines()) . PHP_EOL;
+}
+
+/** One table row per remote package. */
+function printListing(Listing $listing, string $installed = ''): void
+{
+    printf(
+        "%-16s %-9s %-9s %s\n",
+        $listing->slug,
+        $listing->version,
+        $installed === ''
+            ? '-'
+            : ($listing->isNewerThan($installed) ? $installed . ' !' : $installed),
+        $listing->short(46)
+    );
+}
+
+/**
+ * Stops with a helpful message when no archive is configured.
+ *
+ * Every remote command needs this, and "Could not reach the archive: " with
+ * an empty URL would not tell anyone what to fix.
+ */
+function needArchive(Client $client): void
+{
+    if ($client->configured()) {
+        return;
+    }
+
+    fail(implode(PHP_EOL, [
+        'No archive is configured.',
+        '',
+        "Set it in config/config.php (not .env):",
+        '',
+        "    'archive' => [",
+        "        'url' => 'https://your-archive.example',",
+        "    ],",
+        '',
+        'Or run your own with: php hub/bin/hub serve',
+    ]));
+}
+
+/** @var \Botex\Bot\Feeder $feeder */
+$feeder = require __DIR__ . '/../bootstrap/app.php';
+
+$registry = $feeder->get(Registry::class);
+$command = $argv[1] ?? 'ext:list';
+$slug = $argv[2] ?? null;
+$keepFiles = in_array('--keep-files', $argv, true);
+
+// Shared by every archive command below.
+$dryRun = in_array('--dry-run', $argv, true);
+$force = in_array('--force', $argv, true);
+$fresh = in_array('--fresh', $argv, true);
+$verbose = in_array('--verbose', $argv, true) || in_array('-v', $argv, true);
+
+// The bootstrap registers the logger, so failure from here on is recorded,
+// not just printed; the catch below both reports and records.
+try {
+    switch ($command) {
+
+        case 'migrate':
+            foreach (\Botex\Support\Migrator::run() as $created) {
+                echo "  created {$created}" . PHP_EOL;
+            }
+
+            echo 'Core tables are up to date.' . PHP_EOL;
+
+            // extensions create their own tables in install()
+            foreach ($registry->enabled() as $manifest) {
+                try {
+                    $registry->entryClass($manifest)::install();
+                    echo "  {$manifest->slug}: installed" . PHP_EOL;
+                } catch (\Throwable $e) {
+                    fwrite(STDERR, "  ! {$manifest->slug}: {$e->getMessage()}" . PHP_EOL);
+                }
+            }
+
+            break;
+
+        case 'ext:list':
+            $all = $registry->all();
+
+            if (!$all) {
+                echo 'No extensions found.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-12s %-20s %-9s %s\n", 'SLUG', 'NAME', 'VERSION', 'STATUS');
+
+            foreach ($all as $manifest) {
+                printf(
+                    "%-12s %-20s %-9s %s\n",
+                    $manifest->slug,
+                    $manifest->name,
+                    $manifest->version,
+                    $registry->isEnabled($manifest->slug) ? 'enabled' : 'disabled'
+                );
+            }
+
+            foreach ($registry->errors() as $slug => $error) {
+                fwrite(STDERR, "  ! {$slug}: {$error}" . PHP_EOL);
+            }
+
+            break;
+
+        // Installs from the archive when the folder is not already there,
+        // and from disk when it is. Both spellings of "install Clock" then
+        // do what the operator meant, and a folder dropped in by hand keeps
+        // working exactly as before.
+        case 'ext:install':
+            $target = needSlug($slug);
+            $onDisk = $registry->find($target) !== null;
+            $wantsVersion = flagValue($argv, 'version') !== null;
+
+            if ($onDisk && !$wantsVersion && !$force) {
+                echo $feeder->make(Manager::class)->install($target) . PHP_EOL;
+
+                if ($feeder->make(Client::class)->configured()) {
+                    echo PHP_EOL . 'That used the folder already in extensions/. '
+                        . "To pull it from the archive instead: ext:install {$target} --force" . PHP_EOL;
+                }
+
+                break;
+            }
+
+            needArchive($feeder->make(Client::class));
+
+            $installer = $feeder->make(ExtensionInstaller::class);
+            $package = $feeder->make(\Botex\Remote\Downloader::class)
+                ->fetch($target, flagValue($argv, 'version'));
+
+            $plan = $installer->plan($package);
+
+            if ($dryRun) {
+                printPlan($plan, $verbose);
+
+                echo PHP_EOL . 'Nothing was written (--dry-run).' . PHP_EOL;
+                break;
+            }
+
+            if (!$force && !$plan->isSafe()) {
+                fail("Refusing to install {$target}: " . implode('; ', $plan->problems()));
+            }
+
+            printResult($installer->apply($package, $plan));
+            break;
+
+        case 'ext:enable':
+            echo $feeder->make(Manager::class)->enable(needSlug($slug)) . PHP_EOL;
+            break;
+
+        case 'ext:disable':
+            echo $feeder->make(Manager::class)->disable(needSlug($slug)) . PHP_EOL;
+            break;
+
+        case 'ext:remove':
+            echo $feeder->make(Manager::class)->remove(needSlug($slug), $keepFiles) . PHP_EOL;
+            break;
+
+        case 'ext:settings':
+            $settings = $feeder->get(SettingsFactory::class)->for(needSlug($slug));
+
+            if (!$settings->keys()) {
+                echo 'This extension has no settings.' . PHP_EOL;
+                break;
+            }
+
+            foreach ($settings->all() as $key => $value) {
+                printf(
+                    "%-24s %s%s\n",
+                    $key,
+                    is_scalar($value) ? var_export($value, true) : json_encode($value),
+                    $settings->isOverridden($key) ? '  (changed)' : ''
+                );
+            }
+
+            break;
+
+        case 'ext:set':
+            $key = $argv[3] ?? fail('Usage: php bin/console ext:set <slug> <key> <value>');
+            $value = $argv[4] ?? fail('Usage: php bin/console ext:set <slug> <key> <value>');
+
+            // let true/false/numbers/JSON through as real types
+            $decoded = json_decode($value, true);
+
+            $feeder->get(SettingsFactory::class)
+                ->for(needSlug($slug))
+                ->set($key, $decoded === null && $value !== 'null' ? $value : $decoded);
+
+            echo "Set {$key}." . PHP_EOL;
+            break;
+
+        case 'ext:reset':
+            $key = $argv[3] ?? fail('Usage: php bin/console ext:reset <slug> <key>');
+
+            $feeder->get(SettingsFactory::class)->for(needSlug($slug))->reset($key);
+            echo "Reset {$key} to its default." . PHP_EOL;
+            break;
+
+        // ---------------------------------------------------------------
+        // The remote archive. Everything below needs archive.url set in
+        // config/config.php.
+        // ---------------------------------------------------------------
+
+        case 'archive:ping':
+            $client = $feeder->make(Client::class);
+            needArchive($client);
+
+            $info = $client->json('api/v1/ping');
+
+            echo 'Archive:  ' . ($info['archive'] ?? '?') . PHP_EOL;
+            echo 'URL:      ' . $client->base() . PHP_EOL;
+            echo 'Channels: ' . implode(', ', (array) ($info['channels'] ?? [])) . PHP_EOL;
+            echo 'Packages: ' . ($info['packages'] ?? '?') . PHP_EOL;
+            echo 'Signing:  ' . (($info['signed'] ?? false) ? 'yes' : 'no') . PHP_EOL;
+
+            $signature = $feeder->make(Signature::class);
+
+            echo 'This bot: ' . ($signature->required()
+                ? 'requires signed packages (key ' . $signature->fingerprint() . ')'
+                : 'accepts unsigned packages') . PHP_EOL;
+
+            if (($info['signed'] ?? false) && !$signature->required()) {
+                echo PHP_EOL . 'That archive signs its packages but this bot does not check.' . PHP_EOL;
+                echo 'Paste its public key into archive.public_key to enforce it.' . PHP_EOL;
+            }
+
+            break;
+
+        case 'ext:remote':
+            needArchive($feeder->make(Client::class));
+
+            $catalog = $feeder->make(Catalog::class);
+            $available = $catalog->extensions($fresh);
+
+            if ($available === []) {
+                echo 'That archive publishes no extensions.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-16s %-9s %-9s %s\n", 'SLUG', 'ARCHIVE', 'INSTALLED', 'DESCRIPTION');
+
+            foreach ($available as $listing) {
+                printListing($listing, $registry->find($listing->slug)?->version ?? '');
+            }
+
+            echo PHP_EOL . count($available) . ' extension(s) on '
+                . $catalog->channel() . '. A "!" marks one you could update.' . PHP_EOL;
+            break;
+
+        case 'ext:search':
+            needArchive($feeder->make(Client::class));
+
+            $query = $slug ?? fail('Usage: php bin/console ext:search <query>');
+            $results = $feeder->make(Catalog::class)->search($query);
+
+            if ($results === []) {
+                echo "Nothing on the archive matches '{$query}'." . PHP_EOL;
+                break;
+            }
+
+            printf("%-16s %-9s %-9s %s\n", 'SLUG', 'ARCHIVE', 'INSTALLED', 'DESCRIPTION');
+
+            foreach ($results as $listing) {
+                printListing($listing, $registry->find($listing->slug)?->version ?? '');
+            }
+
+            echo PHP_EOL . count($results) . ' result(s).' . PHP_EOL;
+            break;
+
+        case 'ext:show':
+            needArchive($feeder->make(Client::class));
+
+            $listing = $feeder->make(Catalog::class)->find(needSlug($slug), $fresh);
+            $installed = $registry->find($listing->slug);
+
+            echo $listing->name . ' (' . $listing->slug . ')' . PHP_EOL;
+            echo str_repeat('-', 46) . PHP_EOL;
+
+            if ($listing->description !== '') {
+                echo $listing->description . PHP_EOL . PHP_EOL;
+            }
+
+            echo 'Archive version:   ' . $listing->version . PHP_EOL;
+            echo 'Installed version: ' . ($installed?->version ?? 'not installed') . PHP_EOL;
+
+            if ($installed !== null) {
+                echo 'Status:            ' . ($registry->isEnabled($listing->slug) ? 'enabled' : 'disabled')
+                    . ($listing->isNewerThan($installed->version) ? ', update available' : '') . PHP_EOL;
+            }
+
+            foreach ($listing->requires as $what => $constraint) {
+                echo 'Requires:          ' . $what . ' ' . $constraint . PHP_EOL;
+            }
+
+            if ($listing->author !== '') {
+                echo 'Author:            ' . $listing->author . PHP_EOL;
+            }
+
+            if ($listing->versions !== []) {
+                echo PHP_EOL . 'Versions: ' . implode(', ', array_slice($listing->versions, 0, 12)) . PHP_EOL;
+            }
+
+            if ($listing->changelog !== '') {
+                echo PHP_EOL . 'Latest changes:' . PHP_EOL . '  ' . $listing->changelog . PHP_EOL;
+            }
+
+            echo PHP_EOL . 'Commands:' . PHP_EOL;
+
+            foreach (['install', 'update', 'remove'] as $which) {
+                $line = $listing->command($which);
+
+                if ($line !== '') {
+                    printf("  %-8s %s\n", $which, $line);
+                }
+            }
+
+            break;
+
+        case 'ext:outdated':
+            needArchive($feeder->make(Client::class));
+
+            $available = $feeder->make(Catalog::class)->extensions($fresh);
+            $outdated = [];
+
+            foreach ($registry->all() as $manifest) {
+                $listing = $available[$manifest->slug] ?? null;
+
+                if ($listing !== null && $listing->isNewerThan($manifest->version)) {
+                    $outdated[$manifest->slug] = [$manifest->version, $listing->version];
+                }
+            }
+
+            if ($outdated === []) {
+                echo 'Every installed extension is up to date.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-16s %-11s %s\n", 'SLUG', 'INSTALLED', 'ARCHIVE');
+
+            foreach ($outdated as $each => [$from, $to]) {
+                printf("%-16s %-11s %s\n", $each, $from, $to);
+            }
+
+            echo PHP_EOL . count($outdated) . ' update(s) available. '
+                . 'Apply them with: php bin/console ext:update --all' . PHP_EOL;
+            break;
+
+        case 'ext:update':
+            needArchive($feeder->make(Client::class));
+
+            $installer = $feeder->make(ExtensionInstaller::class);
+            $catalog = $feeder->make(Catalog::class);
+
+            // --all updates everything with a newer release; a slug updates
+            // just that one.
+            $targets = [];
+
+            if (in_array('--all', $argv, true)) {
+                $available = $catalog->extensions($fresh);
+
+                foreach ($registry->all() as $manifest) {
+                    $listing = $available[$manifest->slug] ?? null;
+
+                    if ($listing !== null && $listing->isNewerThan($manifest->version)) {
+                        $targets[] = $manifest->slug;
+                    }
+                }
+
+                if ($targets === []) {
+                    echo 'Every installed extension is up to date.' . PHP_EOL;
+                    break;
+                }
+            } else {
+                $target = needSlug($slug);
+
+                if ($registry->find($target) === null) {
+                    fail("{$target} is not installed. Install it with: php bin/console ext:install {$target}");
+                }
+
+                $targets[] = $target;
+            }
+
+            $failures = 0;
+
+            foreach ($targets as $index => $target) {
+                if ($index > 0) {
+                    echo PHP_EOL;
+                }
+
+                try {
+                    $package = $feeder->make(\Botex\Remote\Downloader::class)
+                        ->fetch($target, flagValue($argv, 'version'));
+
+                    $plan = $installer->plan($package);
+
+                    if ($dryRun) {
+                        printPlan($plan, $verbose);
+                        continue;
+                    }
+
+                    if (!$force && !$plan->isSafe()) {
+                        fwrite(STDERR, "Skipping {$target}: "
+                            . implode('; ', $plan->problems()) . PHP_EOL);
+                        $failures++;
+                        continue;
+                    }
+
+                    printResult($installer->apply($package, $plan));
+                } catch (RemoteException | \Botex\Update\UpdateException $e) {
+                    // One extension failing must not abandon the rest of a
+                    // --all run.
+                    fwrite(STDERR, "! {$target}: " . $e->getMessage() . PHP_EOL);
+                    $failures++;
+                }
+            }
+
+            if ($failures > 0) {
+                exit(1);
+            }
+
+            break;
+
+        case 'core:check':
+            needArchive($feeder->make(Client::class));
+
+            $listing = $feeder->make(Catalog::class)->core($fresh);
+
+            echo 'Installed: ' . Botex::VERSION . PHP_EOL;
+
+            if ($listing === null) {
+                echo 'That archive publishes no core releases.' . PHP_EOL;
+                break;
+            }
+
+            echo 'Archive:   ' . $listing->version . PHP_EOL;
+
+            $inventory = $feeder->make(Inventory::class);
+
+            if (!$inventory->isUsable()) {
+                echo PHP_EOL . 'There is no record of what was installed, so local changes' . PHP_EOL;
+                echo 'cannot be detected. Run: php bin/console core:adopt' . PHP_EOL;
+            } else {
+                $dirty = $inventory->dirty();
+
+                echo 'Local:     ' . ($dirty === []
+                    ? 'no changes to core files'
+                    : count($dirty) . ' core file(s) edited (core:diff to see them)') . PHP_EOL;
+            }
+
+            if (!$listing->isNewerThan(Botex::VERSION)) {
+                echo PHP_EOL . 'You are up to date.' . PHP_EOL;
+                break;
+            }
+
+            echo PHP_EOL . 'An update is available.' . PHP_EOL;
+
+            if ($listing->changelog !== '') {
+                echo PHP_EOL . 'Changes:' . PHP_EOL . '  ' . $listing->changelog . PHP_EOL;
+            }
+
+            echo PHP_EOL . 'See what it would do:  php bin/console core:update --dry-run' . PHP_EOL;
+            echo 'Apply it:              php bin/console core:update' . PHP_EOL;
+            break;
+
+        case 'core:update':
+            needArchive($feeder->make(Client::class));
+
+            $updater = $feeder->make(CoreUpdater::class);
+
+            if ($dryRun) {
+                $package = $feeder->make(\Botex\Remote\Downloader::class)
+                    ->fetch('core', flagValue($argv, 'version'));
+
+                printPlan($updater->plan($package), $verbose);
+
+                echo PHP_EOL . 'Nothing was written (--dry-run).' . PHP_EOL;
+                break;
+            }
+
+            $result = $updater->update(flagValue($argv, 'version'), $force);
+
+            if ($result->plan->isEmpty()) {
+                echo 'The core is already at ' . $result->to . '; nothing to do.' . PHP_EOL;
+                break;
+            }
+
+            printResult($result);
+
+            echo PHP_EOL . 'Restart the job worker so it runs the new code.' . PHP_EOL;
+
+            if ($result->dependenciesChanged) {
+                echo 'Then run: composer install' . PHP_EOL;
+            }
+
+            break;
+
+        case 'core:diff':
+            $inventory = $feeder->make(Inventory::class);
+
+            if (!$inventory->isUsable()) {
+                echo 'There is no record of what was installed yet.' . PHP_EOL . PHP_EOL;
+                echo 'Run "php bin/console core:adopt" to record the files you have now' . PHP_EOL;
+                echo 'as your baseline. After that, this command shows what you changed.' . PHP_EOL;
+                break;
+            }
+
+            $drift = $inventory->drift();
+
+            echo 'Baseline: ' . ($inventory->version() ?? '?')
+                . ' recorded ' . ($inventory->recordedAt() ?? '?') . PHP_EOL;
+            echo 'Running:  ' . Botex::VERSION . PHP_EOL . PHP_EOL;
+
+            if ($drift['changed'] === [] && $drift['removed'] === [] && $drift['added'] === []) {
+                echo 'No core file differs from what was installed.' . PHP_EOL;
+                break;
+            }
+
+            foreach ([
+                'changed' => 'edited',
+                'removed' => 'deleted',
+                'added' => 'added by you',
+            ] as $kind => $label) {
+                if ($drift[$kind] === []) {
+                    continue;
+                }
+
+                echo count($drift[$kind]) . ' ' . $label . ':' . PHP_EOL;
+
+                // Added files are usually the operator's own scratch work and
+                // can be numerous, so they are capped unless asked for.
+                $show = $verbose || $kind !== 'added'
+                    ? $drift[$kind]
+                    : array_slice($drift[$kind], 0, 10);
+
+                foreach ($show as $path) {
+                    echo '  ' . ($kind === 'changed' ? '~' : ($kind === 'removed' ? '-' : '+'))
+                        . ' ' . $path . PHP_EOL;
+                }
+
+                if (count($show) < count($drift[$kind])) {
+                    echo '  ... and ' . (count($drift[$kind]) - count($show)) . ' more (-v for all)' . PHP_EOL;
+                }
+
+                echo PHP_EOL;
+            }
+
+            if ($drift['changed'] !== [] || $drift['removed'] !== []) {
+                echo 'A core update will stop rather than overwrite these.' . PHP_EOL;
+                echo 'Move custom behaviour into an extension and it will never conflict.' . PHP_EOL;
+            }
+
+            break;
+
+        case 'core:adopt':
+            $inventory = $feeder->make(Inventory::class);
+            $existed = $inventory->isUsable();
+
+            if ($existed && !$force) {
+                $dirty = $inventory->dirty();
+
+                if ($dirty !== []) {
+                    echo 'This would accept ' . count($dirty) . ' edited file(s) as the new baseline,' . PHP_EOL;
+                    echo 'so a future update would no longer warn about them:' . PHP_EOL . PHP_EOL;
+
+                    foreach (array_slice($dirty, 0, 10) as $path) {
+                        echo '  ~ ' . $path . PHP_EOL;
+                    }
+
+                    if (count($dirty) > 10) {
+                        echo '  ... and ' . (count($dirty) - 10) . ' more' . PHP_EOL;
+                    }
+
+                    echo PHP_EOL . 'Re-run with --force if that is what you want.' . PHP_EOL;
+                    break;
+                }
+            }
+
+            $recorded = $inventory->record();
+
+            echo "Recorded {$recorded} core file(s) as the baseline for " . Botex::VERSION . '.' . PHP_EOL;
+            echo 'Local changes are now measured against these.' . PHP_EOL;
+            break;
+
+        case 'core:backups':
+            $backups = $feeder->make(Backup::class)->all();
+
+            if ($backups === []) {
+                echo 'There are no backups.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-22s %-7s %s\n", 'BACKUP', 'FILES', 'REASON');
+
+            foreach ($backups as $label => $meta) {
+                printf(
+                    "%-22s %-7d %s\n",
+                    $label,
+                    (int) ($meta['files'] ?? 0),
+                    (string) ($meta['reason'] ?? '')
+                );
+            }
+
+            echo PHP_EOL . 'Restore one with: php bin/console core:rollback <backup>' . PHP_EOL;
+            break;
+
+        case 'core:rollback':
+            $updater = $feeder->make(CoreUpdater::class);
+            $restored = $updater->rollback($slug);
+
+            echo 'Restored ' . count($restored) . ' file(s).' . PHP_EOL;
+
+            foreach (array_slice($restored, 0, 15) as $path) {
+                echo '  ~ ' . $path . PHP_EOL;
+            }
+
+            if (count($restored) > 15) {
+                echo '  ... and ' . (count($restored) - 15) . ' more' . PHP_EOL;
+            }
+
+            echo PHP_EOL . 'Restart the job worker. If composer.json was among these, run composer install.' . PHP_EOL;
+            break;
+
+        case 'version':
+            echo Botex::describe() . PHP_EOL;
+
+            $inventory = $feeder->make(Inventory::class);
+
+            if ($inventory->isUsable()) {
+                $dirty = $inventory->dirty();
+
+                echo 'Core files: ' . ($dirty === []
+                    ? 'unmodified'
+                    : count($dirty) . ' edited') . PHP_EOL;
+            }
+
+            echo 'Extensions: ' . count($registry->all()) . ' installed, '
+                . count($registry->enabled()) . ' enabled' . PHP_EOL;
+
+            $client = $feeder->make(Client::class);
+
+            echo 'Archive:    ' . ($client->configured() ? $client->base() : 'not configured') . PHP_EOL;
+            break;
+
+        // A single command that answers "is this install healthy", so the
+        // usual questions do not need six separate invocations.
+        case 'doctor':
+            echo Botex::describe() . PHP_EOL . PHP_EOL;
+
+            $problems = 0;
+
+            // Extensions that failed to load.
+            foreach ($registry->errors() as $each => $error) {
+                echo "  ! extension {$each}: {$error}" . PHP_EOL;
+                $problems++;
+            }
+
+            // The compat shim: anything here is an extension still using the
+            // pre-rename namespace.
+            $aliased = \Botex\Compat::aliased();
+
+            if ($aliased !== []) {
+                echo '  ! ' . count($aliased) . ' class(es) resolved through the legacy App\\ alias.' . PHP_EOL;
+                echo '    Those extensions should import Botex\\ instead.' . PHP_EOL;
+                $problems++;
+            }
+
+            // Writability of what an update has to touch.
+            foreach (['src', 'extensions', 'storage'] as $directory) {
+                $path = dirname(__DIR__) . '/' . $directory;
+
+                if (is_dir($path) && !is_writable($path)) {
+                    echo "  ! {$directory}/ is not writable, so updates will fail." . PHP_EOL;
+                    $problems++;
+                }
+            }
+
+            // The update baseline.
+            $inventory = $feeder->make(Inventory::class);
+
+            if (!$inventory->isUsable()) {
+                echo '  ! no core baseline recorded; run: php bin/console core:adopt' . PHP_EOL;
+                $problems++;
+            } elseif ($inventory->dirty() !== []) {
+                echo '  - ' . count($inventory->dirty())
+                    . ' core file(s) edited; core:update will stop rather than overwrite them.' . PHP_EOL;
+            }
+
+            // Things the archive needs.
+            if (!\Botex\Archive\Zip::canDeflate()) {
+                echo '  ! this PHP has no zlib, so packages cannot be read.' . PHP_EOL;
+                $problems++;
+            }
+
+            if (!function_exists('curl_init')) {
+                echo '  ! this PHP has no curl, so the archive cannot be reached.' . PHP_EOL;
+                $problems++;
+            }
+
+            $client = $feeder->make(Client::class);
+
+            if (!$client->configured()) {
+                echo '  - no archive configured (archive.url in config/config.php).' . PHP_EOL;
+            } else {
+                try {
+                    $feeder->make(Client::class)->json('api/v1/ping');
+                    echo '  ok archive reachable at ' . $client->base() . PHP_EOL;
+                } catch (RemoteException $e) {
+                    echo '  ! archive unreachable: ' . $e->getMessage() . PHP_EOL;
+                    $problems++;
+                }
+            }
+
+            // The database, which everything else assumes.
+            try {
+                $feeder->make(UserService::class)->stats();
+                echo '  ok database reachable' . PHP_EOL;
+            } catch (\Throwable $e) {
+                echo '  ! database: ' . $e->getMessage() . PHP_EOL;
+                echo '    Run: php bin/console migrate' . PHP_EOL;
+                $problems++;
+            }
+
+            echo PHP_EOL . ($problems === 0
+                ? 'No problems found.'
+                : $problems . ' problem(s) found.') . PHP_EOL;
+
+            if ($problems > 0) {
+                exit(1);
+            }
+
+            break;
+
+        case 'wallet:show':
+            $wallet = $feeder->make(WalletService::class);
+            $userId = needUserId($feeder->make(UserService::class), $slug);
+
+            echo 'Balance: ' . $wallet->balanceMoney($userId)->format() . PHP_EOL;
+
+            $entries = $wallet->history($userId, 20);
+
+            if (!$entries) {
+                echo 'No transactions.' . PHP_EOL;
+                break;
+            }
+
+            echo PHP_EOL;
+            printf("%-6s %-8s %14s %14s  %s\n", 'ID', 'TYPE', 'AMOUNT', 'BALANCE', 'REASON');
+
+            foreach ($entries as $entry) {
+                printf(
+                    "%-6d %-8s %14s %14s  %s%s\n",
+                    $entry->id,
+                    $entry->type()->value,
+                    ($entry->amount > 0 ? '+' : '-') . $wallet->money($entry->absoluteAmount())->amount(),
+                    $wallet->money((int) $entry->balance_after)->amount(),
+                    $entry->reason,
+                    $entry->reference() ? '  [' . $entry->reference() . ']' : ''
+                );
+            }
+
+            $total = $wallet->historyCount($userId);
+
+            if ($total > 20) {
+                echo PHP_EOL . "Showing 20 of {$total}." . PHP_EOL;
+            }
+
+            break;
+
+        case 'wallet:credit':
+        case 'wallet:debit':
+            $wallet = $feeder->make(WalletService::class);
+            $userId = needUserId($feeder->make(UserService::class), $slug);
+            $amount = needAmount($argv[3] ?? null);
+            $reason = $argv[4] ?? 'Manual adjustment by operator';
+
+            $entry = $command === 'wallet:credit'
+                ? $wallet->credit($userId, $amount, $reason)
+                : $wallet->debit($userId, $amount, $reason);
+
+            printf(
+                "Recorded %s #%d. Balance is now %s.\n",
+                $entry->type()->value,
+                $entry->id,
+                $wallet->money((int) $entry->balance_after)->format()
+            );
+
+            break;
+
+        case 'wallet:refund':
+            $wallet = $feeder->make(WalletService::class);
+            $transactionId = $slug;
+
+            if ($transactionId === null || !ctype_digit($transactionId)) {
+                fail('Usage: php bin/console wallet:refund <transaction-id> [amount]');
+            }
+
+            $amount = isset($argv[3]) ? needAmount($argv[3]) : null;
+            $entry = $wallet->refund((int) $transactionId, $amount, 'Refund by operator');
+
+            printf(
+                "Refunded %s against #%d. Balance is now %s.\n",
+                $wallet->money($entry->absoluteAmount())->format(),
+                (int) $entry->refunds_transaction_id,
+                $wallet->money((int) $entry->balance_after)->format()
+            );
+
+            break;
+
+        case 'wallet:stats':
+            $stats = $feeder->make(WalletService::class)->stats();
+
+            echo 'Wallets opened: ' . $stats['wallets'] . PHP_EOL;
+            echo 'Total held: ' . $stats['formatted'] . PHP_EOL;
+            break;
+
+        case 'action:list':
+            // Both allowlists, because a button can target either.
+            $runnables = $feeder->make(Runnables::class)->all();
+            $commands = $feeder->make(\Botex\Bot\Command\Commands::class)->map();
+
+            printf("%-32s %s\n", 'TARGET', 'CLASS');
+
+            foreach ($commands as $verb => $class) {
+                printf("%-32s %s\n", 'command:' . $verb, $class);
+            }
+
+            foreach ($runnables as $key => $class) {
+                printf("%-32s %s\n", $key, $class);
+            }
+
+            if (!$runnables) {
+                echo PHP_EOL . 'No runnable actions are registered.' . PHP_EOL;
+            }
+
+            break;
+
+        case 'action:stats':
+            $store = $feeder->make(ActionStore::class);
+
+            echo 'Stored actions: ' . $store->count() . PHP_EOL;
+            echo 'Still pressable: ' . $store->countLive() . PHP_EOL;
+
+            foreach ($store->recent(10) as $row) {
+                printf(
+                    "  #%-5d %-24s %-10s %s\n",
+                    (int) $row->id,
+                    $row->isCommand() ? $row->commandText() : $row->key(),
+                    $row->kind,
+                    $row->isLive() ? 'live' : ($row->isExpired() ? 'expired' : 'spent')
+                );
+            }
+
+            break;
+
+        case 'action:prune':
+            echo 'Pruned ' . $feeder->make(ActionStore::class)->prune() . ' action(s).' . PHP_EOL;
+            break;
+
+        // The one long-running process. Everything else here just writes
+        // rows for it to pick up.
+        case 'jobs:work':
+            $worker = $feeder->make(Worker::class);
+            $worker->onLog(function (string $line) {
+                echo '[' . date('H:i:s') . '] ' . $line . PHP_EOL;
+            });
+
+            // Registers the core prune job, so an install that never
+            // schedules anything still keeps its own table tidy.
+            $keep = (int) $feeder->get(\Botex\Support\Config::class)->get('jobs.keep_finished', 604800);
+
+            if ($keep > 0) {
+                $feeder->make(JobService::class)->ensure(
+                    JobRequest::to(
+                        JobRequest::CORE,
+                        'prune',
+                        Schedule::everyHours(6)->startingIn(60),
+                        ['keep' => $keep]
+                    )->keyed('core:prune')
+                );
+            }
+
+            if (in_array('--once', $argv, true)) {
+                // One pass, for cron-style supervision or a smoke test.
+                echo 'Ran ' . $worker->tick() . ' job(s).' . PHP_EOL;
+                break;
+            }
+
+            $worker->run((int) (flagValue($argv, 'seconds') ?? 0));
+            break;
+
+        case 'jobs:list':
+            $jobs = $feeder->make(JobService::class);
+            $rows = $jobs->recent(50);
+
+            $stats = $jobs->stats();
+            printf(
+                "%d job(s): %d pending, %d running, %d done, %d failed, %d paused (%d due)\n",
+                $stats['total'],
+                $stats['pending'],
+                $stats['running'],
+                $stats['done'],
+                $stats['failed'],
+                $stats['paused'],
+                $stats['due']
+            );
+
+            echo 'Worker: ' . $feeder->make(WorkerLease::class)->describe() . PHP_EOL;
+
+            if ($rows->isEmpty()) {
+                break;
+            }
+
+            echo PHP_EOL;
+            printf("%-5s %-26s %-9s %-14s %-12s %s\n", 'ID', 'JOB', 'STATUS', 'SCHEDULE', 'NEXT', 'RUNS');
+
+            foreach ($rows as $row) {
+                printf(
+                    "%-5d %-26s %-9s %-14s %-12s %d%s\n",
+                    (int) $row->id,
+                    $row->handlerKey(),
+                    $row->status()->value,
+                    $row->describeSchedule(),
+                    $row->describeNextRun(),
+                    (int) $row->runs,
+                    $row->last_error ? '  ! ' . $row->last_error : ''
+                );
+            }
+
+            break;
+
+        case 'jobs:registered':
+            $registered = $feeder->make(JobService::class)->registered();
+
+            if (!$registered) {
+                echo 'No jobs are registered.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-28s %s\n", 'JOB', 'CLASS');
+
+            foreach ($registered as $key => $class) {
+                printf("%-28s %s\n", $key, $class);
+            }
+
+            break;
+
+        case 'jobs:schedule':
+            $jobName = $argv[3] ?? fail(
+                'Usage: php bin/console jobs:schedule <extension> <job> [+seconds|every:seconds] [key]'
+            );
+            $when = $argv[4] ?? '+0';
+            $key = $argv[5] ?? null;
+
+            $schedule = str_starts_with($when, 'every:')
+                ? Schedule::every((int) substr($when, 6))
+                : Schedule::in((int) ltrim($when, '+'));
+
+            $request = JobRequest::to(needSlug($slug), $jobName, $schedule);
+            $job = $feeder->make(JobService::class)
+                ->schedule($key === null ? $request : $request->keyed($key));
+
+            printf(
+                "Scheduled #%d (%s) %s, next %s.\n",
+                (int) $job->id,
+                $job->handlerKey(),
+                $job->describeSchedule(),
+                $job->describeNextRun()
+            );
+
+            break;
+
+        case 'jobs:run':
+            $id = needId($slug, 'Usage: php bin/console jobs:run <id>');
+
+            if (!$feeder->make(JobService::class)->runNow($id)) {
+                fail("Could not queue job #{$id}. It may be running or gone.");
+            }
+
+            echo "Job #{$id} is due now; the worker will pick it up." . PHP_EOL;
+            break;
+
+        case 'jobs:pause':
+            $id = needId($slug, 'Usage: php bin/console jobs:pause <id>');
+
+            if (!$feeder->make(JobService::class)->pause($id)) {
+                fail("No job #{$id}.");
+            }
+
+            echo "Paused job #{$id}." . PHP_EOL;
+            break;
+
+        case 'jobs:resume':
+            $id = needId($slug, 'Usage: php bin/console jobs:resume <id>');
+
+            if (!$feeder->make(JobService::class)->resume($id)) {
+                fail("Could not resume job #{$id}. It may already be active.");
+            }
+
+            echo "Resumed job #{$id}." . PHP_EOL;
+            break;
+
+        case 'jobs:cancel':
+            $id = needId($slug, 'Usage: php bin/console jobs:cancel <id>');
+
+            if (!$feeder->make(JobService::class)->cancel($id)) {
+                fail("No job #{$id}.");
+            }
+
+            echo "Cancelled job #{$id}." . PHP_EOL;
+            break;
+
+        case 'jobs:worker':
+            $lease = $feeder->make(WorkerLease::class);
+
+            if (in_array('--release', $argv, true)) {
+                // For a worker killed so hard it never released the lease
+                // and you would rather not wait for it to lapse.
+                $lease->forceRelease();
+                echo 'Released the worker lease.' . PHP_EOL;
+                break;
+            }
+
+            echo 'Worker: ' . $lease->describe() . PHP_EOL;
+
+            $current = $lease->current();
+
+            if ($current) {
+                echo 'Jobs run: ' . ($current['ran'] ?? 0) . PHP_EOL;
+                echo 'Last heartbeat: ' . ($current['heartbeat_at'] ?? '-') . PHP_EOL;
+            }
+
+            break;
+
+        default:
+            fail("Unknown command '{$command}'. Try ext:list, ext:remote or core:check.");
+    }
+} catch (NotFound $e) {
+    // The archive simply does not have it. An ordinary answer, so it is not
+    // logged at error level and does not page anybody.
+    fail($e->getMessage());
+} catch (RemoteException | \Botex\Update\UpdateException | \Botex\Archive\ArchiveException $e) {
+    // A refused update, an unreachable archive, a package that failed
+    // verification: all expected operational outcomes with a message written
+    // for the person reading it. Recorded as a warning so there is a trail,
+    // but not as an error -- these do not mean the bot is broken, and
+    // error level would notify the admin chat for a typo'd slug.
+    \Botex\Support\Log\Log::warning('Archive command refused: ' . $e->getMessage(), [
+        'type' => 'console',
+        'command' => $command,
+    ]);
+
+    fail($e->getMessage());
+} catch (\Throwable $e) {
+    // Same rule as the webhook: whatever a deeper catch already recorded is
+    // not recorded twice on its way out.
+    if (!\Botex\Support\Log\Log::seen($e)) {
+        \Botex\Support\Log\Log::exception(
+            $e,
+            'Console command failed',
+            \Botex\Support\Log\Level::Error,
+            ['type' => 'console', 'command' => $command]
+        );
+    }
+
+    fail('Error: ' . $e->getMessage());
+}

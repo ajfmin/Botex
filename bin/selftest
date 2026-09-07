@@ -1,0 +1,126 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Checks the machinery an update depends on, without a network or a database.
+ *
+ *   php bin/selftest
+ *
+ * Written as a plain script rather than with a test framework so it runs on
+ * a fresh host before composer install has ever succeeded -- which is
+ * exactly when someone most needs to know whether the archive code works.
+ *
+ * Everything here is offline and writes only inside a temporary directory.
+ * Exits non-zero if anything fails, so it can gate a deploy.
+ */
+
+if (PHP_SAPI !== 'cli') {
+    exit(1);
+}
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use Botex\Archive\Hash;
+use Botex\Archive\Manifest;
+use Botex\Archive\Package;
+use Botex\Archive\Version;
+use Botex\Archive\Zip;
+
+$passed = 0;
+$failed = 0;
+$current = '';
+
+function group(string $name): void
+{
+    echo PHP_EOL . $name . PHP_EOL;
+}
+
+/** Runs one assertion, catching a throw as a failure rather than a crash. */
+function check(string $what, callable $test): void
+{
+    global $passed, $failed;
+
+    try {
+        $result = $test();
+    } catch (\Throwable $e) {
+        $failed++;
+        echo '  FAIL  ' . $what . PHP_EOL;
+        echo '        threw ' . get_class($e) . ': ' . $e->getMessage() . PHP_EOL;
+
+        return;
+    }
+
+    if ($result === true) {
+        $passed++;
+        echo '  ok    ' . $what . PHP_EOL;
+
+        return;
+    }
+
+    $failed++;
+    echo '  FAIL  ' . $what . PHP_EOL;
+
+    if (is_string($result) && $result !== '') {
+        echo '        ' . $result . PHP_EOL;
+    }
+}
+
+/** Asserts the callable throws, which is the point of most guards here. */
+function refuses(string $what, callable $test): void
+{
+    check($what, static function () use ($test) {
+        try {
+            $test();
+        } catch (\Throwable) {
+            return true;
+        }
+
+        return 'it was accepted, but should have been refused';
+    });
+}
+
+$temp = sys_get_temp_dir() . '/botex-selftest-' . bin2hex(random_bytes(4));
+
+if (!@mkdir($temp, 0775, true) && !is_dir($temp)) {
+    fwrite(STDERR, "Could not create {$temp}" . PHP_EOL);
+    exit(1);
+}
+
+function cleanup(string $directory): void
+{
+    if (!is_dir($directory)) {
+        return;
+    }
+
+    $items = new \RecursiveIteratorIterator(
+        new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+        \RecursiveIteratorIterator::CHILD_FIRST
+    );
+
+    foreach ($items as $item) {
+        $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+    }
+
+    @rmdir($directory);
+}
+
+echo 'Botex selftest' . PHP_EOL;
+echo 'PHP ' . PHP_VERSION . ', zlib ' . (Zip::canDeflate() ? 'yes' : 'no') . PHP_EOL;
+
+try {
+    require __DIR__ . '/selftest.d/zip.php';
+    require __DIR__ . '/selftest.d/package.php';
+    require __DIR__ . '/selftest.d/version.php';
+    require __DIR__ . '/selftest.d/inventory.php';
+    require __DIR__ . '/selftest.d/safety.php';
+    require __DIR__ . '/selftest.d/hub.php';
+} finally {
+    cleanup($temp);
+}
+
+echo PHP_EOL . str_repeat('-', 46) . PHP_EOL;
+echo $failed === 0
+    ? "All {$passed} checks passed." . PHP_EOL
+    : "{$passed} passed, {$failed} FAILED." . PHP_EOL;
+
+exit($failed === 0 ? 0 : 1);

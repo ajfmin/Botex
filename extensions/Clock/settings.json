@@ -1,0 +1,11 @@
+{
+  "timezone": "Asia/Tehran",
+  "time_format": "H:i:s",
+  "date_format": "Y-m-d",
+  "zones": [
+    "Asia/Tehran",
+    "UTC",
+    "Europe/London",
+    "America/New_York"
+  ]
+}

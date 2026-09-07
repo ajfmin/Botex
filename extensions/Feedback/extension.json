@@ -1,0 +1,6 @@
+{
+  "name": "Feedback & Rating",
+  "version": "1.0.0",
+  "description": "Asks users a configurable set of questions plus a star rating, stores the answers, and forwards them to the admins.",
+  "entry": "Extensions\\Feedback\\Extension"
+}

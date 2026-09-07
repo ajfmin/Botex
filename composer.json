@@ -1,0 +1,17 @@
+{
+  "name": "botex/botex",
+  "description": "Botex - an advanced base for building Telegram bots: extensions, jobs, wallet, run actions and a remote archive.",
+  "type": "project",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "Botex\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.2",
+    "illuminate/database": "^13.7",
+    "illuminate/events": "^13.18",
+    "vlucas/phpdotenv": "^5.6"
+  }
+}

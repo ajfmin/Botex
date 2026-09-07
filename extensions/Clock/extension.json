@@ -1,0 +1,6 @@
+{
+    "name": "Showing Clock",
+    "version": "1.2.0",
+    "description": "Shows the current time with refresh and per-zone Run buttons, plus /remind and /watch scheduled jobs. Test extension for the extension, Run action and job systems.",
+    "entry": "Extensions\\Clock\\Extension"
+}
