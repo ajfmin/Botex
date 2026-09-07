@@ -55,20 +55,7 @@ return [
         // publish to, not enough for a shared one.
         //
         // Generate a pair with: php hub/bin/hub keygen
-        'public_key' => '-----BEGIN PUBLIC KEY-----
-MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAnAJ66fo/OYsbWBO5X92T
-fcs7+BlzihKdJZAI/Ea9rXd7cTAe3frUFb1j8D23iQvDJTjTaovIeXjCqt1CIdmG
-EaRmYhY55LamFY3wycVtgye5Cu9QDS30Z82Z52z0SUGBdELwcNXcOUgm4i2DW0T9
-JFPtewIdkAOy3YMa7GMzLkn7LXb09u3Nm7HNjbykgnwoK62xi36XmRvXf7NmfCap
-gfPh7h1Kb45UbbWM0ePlj8Xe2ooVrYv9HCzCO835yAeMwiwKVW19ajuNxo/A5Ypn
-Un/WWIBXiqEWGkqLnQJY4N/HLY/ZC4p1/wWvd0iWUkUb8Qlmk96KtKwsSwjp1zrV
-Fjw3DaZzY9egHw4BesGD6anvkKoJWgEshstBDsJUPQ7/KYpgc9L1AV8yIy9NlRKA
-RMqrY1hliYR+XIVMCV8Im2834JxmeL70a4U/Zyu8+FnCC0yyezMeP70+76SfnSsa
-kYp3OI+8iwqxQFgzYXYVYzntuwX39tzYiBuzjYQsHY3VG6L3bTcuGUSlfOGidaJm
-sZZJF1rEjA8LB1cBX4MQWrhPUUYeTeDudhaBYXw83WfuEnBLPcaXOKVZ7ex4dQLR
-zE1hGjX37Eoz3Hsa9bOkM7lI4EiWShlfubp4uVHprnif6j1YkU+keq+8tX+U2jOg
-tj1t9ln9EahqwzFxKeHseYMCAwEAAQ==
------END PUBLIC KEY-----',
+        'public_key' => dirname(__DIR__) . 'storage\keys\botex-signing.pub',
 
         // Seconds an archive answer is reused for. The admin panel reads
         // the catalog from this cache, so a webhook never waits on the
