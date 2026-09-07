@@ -2,3 +2,5 @@
 /vendor/
 *.log
 composer.lock
+/hub/
+*.botex

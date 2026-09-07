@@ -71,6 +71,69 @@ check('the hub needs no composer to run', static function () {
     return true;
 });
 
+check('a template fetched directly refuses to render', static function () {
+    // The reported failure: with the document root one level too high,
+    // /views/home.php is fetched over HTTP, $view never exists, and the
+    // template dies with a fatal error quoting its own filesystem path --
+    // a broken page and an information leak. Every template must guard.
+    $views = glob(__DIR__ . '/../../hub/views/*.php') ?: [];
+    $unguarded = [];
+
+    foreach ($views as $file) {
+        $name = basename($file);
+
+        if ($name === '_guard.php') {
+            continue;
+        }
+
+        if (!str_contains((string) file_get_contents($file), "_guard.php")) {
+            $unguarded[] = $name;
+        }
+    }
+
+    return $unguarded === []
+        ? true
+        : 'these render without checking $view exists: ' . implode(', ', $unguarded);
+});
+
+check('the guard rejects a missing or wrong $view', static function () {
+    $guard = __DIR__ . '/../../hub/views/_guard.php';
+
+    if (!is_file($guard)) {
+        return 'hub/views/_guard.php is missing';
+    }
+
+    $source = (string) file_get_contents($guard);
+
+    // It must check the type, not merely isset(): a template reached with a
+    // stray global named $view would otherwise sail past and fatal anyway.
+    if (!str_contains($source, 'instanceof')) {
+        return 'the guard does not check that $view is a View';
+    }
+
+    return str_contains($source, 'exit') || str_contains($source, 'die')
+        ? true
+        : 'the guard does not stop execution';
+});
+
+check('nothing private sits under the served directory', static function () {
+    // storage/ holds the package store and any signing key. Under public/ it
+    // is a static file the web server will hand out.
+    $public = realpath(__DIR__ . '/../../hub/public');
+    $storage = realpath(__DIR__ . '/../../hub/storage');
+
+    if ($public === false || $storage === false) {
+        return true;
+    }
+
+    $inside = str_starts_with(
+        str_replace('\\', '/', $storage) . '/',
+        str_replace('\\', '/', $public) . '/'
+    );
+
+    return $inside ? 'hub/storage is inside hub/public' : true;
+});
+
 group('Update plan');
 
 check('a plan with no problems is safe', static function () {
