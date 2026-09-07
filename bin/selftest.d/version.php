@@ -122,6 +122,58 @@ check('caret constraints allow only compatible releases', static function () {
     return true;
 });
 
+check('a partial constraint operand is accepted', static function () {
+    // `>=8.2` is how composer.json spells a PHP requirement, so a core
+    // release built from source carries it verbatim. Holding the operand to
+    // major.minor.patch made every such release unsatisfiable and reported
+    // "needs PHP >=8.2, this is 8.3.28" -- refusing an update that would
+    // have installed fine.
+    $cases = [
+        ['>=8.2', '8.3.28', true],
+        ['>=8.2', '8.1.0', false],
+        ['>=8', '8.0.0', true],
+        ['<8.4', '8.3.28', true],
+        ['<8.4', '8.4.0', false],
+        ['>=1.2,<2', '1.5.0', true],
+        ['>=1.2,<2', '2.0.0', false],
+        ['8.2', '8.2.0', true],
+        ['8.2', '8.2.1', false],
+        // Still refused, since neither side parses as a version at all.
+        ['>=8.2', 'not-a-version', false],
+        ['>=not-a-version', '8.3.0', false],
+    ];
+
+    foreach ($cases as [$constraint, $version, $expected]) {
+        $actual = Version::satisfies($version, $constraint);
+
+        if ($actual !== $expected) {
+            return sprintf(
+                'satisfies(%s, %s) gave %s, expected %s',
+                $version,
+                $constraint,
+                var_export($actual, true),
+                var_export($expected, true)
+            );
+        }
+    }
+
+    return true;
+});
+
+check('a partial version is still not publishable', static function () {
+    // The looser constraint parsing must not leak into what may be
+    // published: '1.2' as a release version would become a store path and a
+    // package filename that never compares equal to the '1.2.0' someone
+    // meant.
+    foreach (['1', '1.2', 'v1.2.3'] as $version) {
+        if (Version::isValid($version)) {
+            return "isValid('{$version}') should be false";
+        }
+    }
+
+    return Version::isValid('1.2.3') ? true : "isValid('1.2.3') should be true";
+});
+
 check('the newest of a list is picked', static function () {
     $versions = ['1.0.0', '1.10.0', '1.2.0', '0.9.9', '1.9.0'];
 

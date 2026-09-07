@@ -1,8 +1,13 @@
 # The Archive
 
-A Botex archive is a small website that publishes packages. Bots download
-extensions and core releases from it; people browse it to find extensions,
-read what they do, and copy the command that installs them.
+A Botex archive — the hub — is a small website that publishes packages. Bots
+download extensions and core releases from it; people browse it to find
+extensions, read what they do, and copy the command that installs them.
+
+It is also the only thing a bot talks to. The core originates on GitHub, and
+the hub is what follows it: `mirror-core` reads the repository's releases,
+repackages each one and publishes it here. One machine spends the GitHub rate
+limit and holds any token, and bots see a static file with a published hash.
 
 It has no database, no composer dependencies and no framework. It is a
 folder you copy onto a server, which is the point: an archive that is
@@ -77,6 +82,9 @@ write: `src/`, `bootstrap/`, `public/`, `bin/`, `docs/` and
 are never in it — which is why an update cannot touch them. See
 [UPDATING.md](UPDATING.md).
 
+A core package is always published under the slug `core`, whether it was built
+from a local checkout or mirrored from a GitHub release.
+
 ## Running your own archive
 
 The `hub/` folder is the whole archive. Copy it to a server, point a
@@ -137,6 +145,9 @@ return [
 
     // Off by default. Only enable if you want HTTP publishing.
     'upload_token' => '',
+
+    // Which repository the core is mirrored from. See below.
+    'core' => ['repository' => 'ajfmin/Botex'],
 ];
 ```
 
@@ -152,9 +163,6 @@ From the machine that holds the code:
 # An extension. The folder name must match its entry namespace.
 php hub/bin/hub publish extensions/Clock --changelog="Adds per-zone buttons."
 
-# A core release. Bump Botex::VERSION in src/Botex.php first.
-php hub/bin/hub publish-core . --changelog="Fixes the update planner."
-
 # To a channel other than the default.
 php hub/bin/hub publish extensions/Clock --channel=beta
 ```
@@ -168,10 +176,83 @@ downloads the result.
 Publishing the same version twice is refused. Bump the version, or pass
 `--overwrite` if you are certain.
 
+## Mirroring the core from GitHub
+
+The core is developed on GitHub and served from here. The hub is what bridges
+the two:
+
+```bash
+php hub/bin/hub releases          # what GitHub has, and what is already here
+php hub/bin/hub mirror-core       # the newest release
+php hub/bin/hub mirror-core --version=1.2.0
+php hub/bin/hub mirror-core --all # the whole history; skips what is here
+```
+
+Point it at a repository in `hub/config.php`:
+
+```php
+'core' => [
+    'repository' => 'ajfmin/Botex',
+    'prereleases' => false,
+    'token' => '',          // only for a private repository
+],
+```
+
+Only tags that look like versions are considered. Drafts are skipped,
+prereleases are skipped unless you opt in, and `v1.2.0` is understood as
+version `1.2.0` — the tag and the version are tracked separately, because
+addressing a download with the wrong one asks for a ref that does not exist.
+
+### What gets mirrored
+
+Each release is taken in whichever of these forms it offers:
+
+1. **An attached `.botex`**, built by `publish-core`. Republished as-is, so the
+   per-file hashes are the ones the maintainer built. Verified in full before
+   anything is stored — the hub is about to sign it, and signing bytes nobody
+   opened would mean vouching for them.
+2. **The source archive** GitHub generates for every tag. Unpacked here,
+   filtered to the tracked directories, and built into a package. The hashes
+   are then computed by whoever ran the mirror rather than fixed when the
+   release was cut, which is the only difference.
+
+Either way the release must be internally consistent: if the tag says `1.2.0`
+and the `src/Botex.php` inside declares something else, mirroring refuses,
+because publishing it would leave every bot that installs it reporting the
+wrong version and being offered the same update forever.
+
+`releases` marks which form each release will use, and whether it is already
+published here.
+
+### Keeping it current
+
+`mirror-core --all` skips versions already published, so it is safe on a
+timer — one API call, then downloads only what is new:
+
+```cron
+17 4 * * * cd /var/www/botex-archive && php bin/hub mirror-core --all
+```
+
+It exits non-zero if a release failed, so a broken tag is reported rather than
+mirroring nothing quietly for weeks. One bad release does not stop the others.
+
+### Cutting a release by hand
+
+Publishing straight from a checkout still works, and skips GitHub entirely:
+
+```bash
+# Bump Botex::VERSION in src/Botex.php first.
+php hub/bin/hub publish-core . --changelog="Fixes the update planner."
+```
+
+Useful for a private fork, or for testing a release before tagging it.
+
 | Command | Effect |
 | --- | --- |
 | `publish <path>` | publishes an extension folder |
 | `publish-core <path>` | publishes a core release from a Botex checkout |
+| `mirror-core [--version=] [--all]` | publishes core releases from GitHub |
+| `releases` | GitHub's releases, and which are mirrored |
 | `list [--channel=]` | what is published |
 | `show <slug>` | one package with its version history |
 | `unpublish <slug> <version>` | removes one release and reindexes |
@@ -285,6 +366,10 @@ php bin/console ext:search feed
 php bin/console ext:show Clock
 ```
 
+That block is the bot's entire view of the world. Extensions and the core both
+come through it, and there is nothing else to configure — no repository, no
+token. `php bin/console version` prints the archive it is pointed at.
+
 HTTPS is required. `http://` is refused unless the host is `localhost` or
 `127.0.0.1`, so a local hub is easy to test against and a plaintext
 production archive is not something you can configure by accident.
@@ -321,10 +406,25 @@ directory.
 inflating and its real size and CRC after, against a per-entry and a total
 cap.
 
-**The archive is never trusted to say where a file goes.** A core package
-may only write inside the tracked directories; anything else in it is
-reported as blocked and the update refuses to proceed. An archive you do not
-control cannot use a package to reach your `config/` or your `.env`.
+**No upstream is trusted to say where a file goes.** A core package may only
+write inside the tracked directories; anything else in it is reported as
+blocked and the update refuses to proceed. No archive can use a package to
+reach your `config/` or your `.env`, and no local edit of yours is overwritten
+without `--force`.
+
+**The hub is one upstream for two things, and that is a real cost.** Because
+the core comes through it, a hub you do not control is a hub that can offer
+you a core. Set `public_key` and the bot will refuse anything not signed by
+the key you pinned, which is what makes a compromised host insufficient on its
+own. The alternative — bots reading GitHub directly — trades this for every
+bot depending on `api.github.com`, a shared rate limit per IP, and a token on
+every deploy for a private repository. One machine holding the key and
+spending the rate limit is the trade being made.
+
+**The hub does not forward what it has not checked.** A release fetched from
+GitHub is parsed and fully verified before it is stored, then signed with the
+hub's own key. It refuses a release whose tag and declared version disagree.
+Publishing bytes unopened would mean vouching for them.
 
 **Installing is a CLI action, always.** Neither the admin panel nor
 `panel.php` will download or write a PHP file, no matter who is logged in.

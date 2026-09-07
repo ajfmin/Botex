@@ -134,6 +134,59 @@ check('nothing private sits under the served directory', static function () {
     return $inside ? 'hub/storage is inside hub/public' : true;
 });
 
+check('a download path is not eaten by the base-directory strip', static function () {
+    // Every download URL ends in a version, so its last segment contains
+    // dots. PHP's built-in server -- which is what `hub serve` runs -- then
+    // reports SCRIPT_NAME as the whole request path rather than /index.php,
+    // and stripping dirname() of that leaves '/1.1.0'. The result was a 404
+    // for every package download while browsing worked fine.
+    $router = (string) file_get_contents(__DIR__ . '/../../hub/public/index.php');
+
+    // The guard: only trust SCRIPT_NAME when it actually names a script.
+    if (!str_contains($router, "str_ends_with(strtolower(\$script), '.php')")) {
+        return 'the router strips dirname(SCRIPT_NAME) without checking it is a script';
+    }
+
+    // And prove the parse, rather than only that the source mentions it.
+    $segments = static function (string $uri, string $script): array {
+        $base = str_ends_with(strtolower($script), '.php')
+            ? rtrim(str_replace('\\', '/', dirname($script)), '/')
+            : '';
+
+        if ($base !== '' && $base !== '/' && str_starts_with($uri, $base)) {
+            $uri = substr($uri, strlen($base));
+        }
+
+        return array_values(array_filter(
+            explode('/', trim(str_replace('\\', '/', $uri), '/')),
+            static fn (string $s): bool => $s !== '' && $s !== '.' && $s !== '..'
+        ));
+    };
+
+    $cases = [
+        // uri, script, expected first segment
+        ['/api/v1/download/core/1.1.0', '/api/v1/download/core/1.1.0', 'api'],  // dev server
+        ['/api/v1/download/core/1.1.0', '/index.php', 'api'],                   // rewrite
+        ['/hub/api/v1/ping', '/hub/index.php', 'api'],                          // subfolder
+        ['/api/v1/ping', '/index.php', 'api'],
+    ];
+
+    foreach ($cases as [$uri, $script, $expected]) {
+        $parsed = $segments($uri, $script);
+
+        if (($parsed[0] ?? '') !== $expected) {
+            return sprintf(
+                '%s with SCRIPT_NAME %s parsed as [%s]',
+                $uri,
+                $script,
+                implode(', ', $parsed)
+            );
+        }
+    }
+
+    return true;
+});
+
 group('Update plan');
 
 check('a plan with no problems is safe', static function () {

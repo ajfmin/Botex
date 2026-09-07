@@ -238,7 +238,14 @@ class Version
 
             $target = trim(substr($constraint, strlen($operator)));
 
-            if (!self::isValid($target) || !self::isValid($version)) {
+            // isParseable, not isValid: an operand inside a constraint is
+            // routinely partial. `>=8.2` is how every composer.json in
+            // existence spells a PHP requirement, and holding it to
+            // major.minor.patch rejected it as unparseable -- which read as
+            // "needs PHP >=8.2, this is 8.3.28" and refused an update that
+            // was perfectly installable. compare() fills the missing parts
+            // with zero, which is what the constraint means.
+            if (!self::isParseable($target) || !self::isParseable($version)) {
                 return false;
             }
 
@@ -254,8 +261,10 @@ class Version
             };
         }
 
-        // A bare version means exactly that version.
-        return self::isValid($constraint) && self::isValid($version)
+        // A bare version means exactly that version. Parseable rather than
+        // valid for the same reason as above: `8.2` as a constraint means
+        // 8.2.0, and compare() already reads it that way.
+        return self::isParseable($constraint) && self::isParseable($version)
             && self::compare($version, $constraint) === 0;
     }
 

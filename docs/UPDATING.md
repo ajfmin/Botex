@@ -1,8 +1,25 @@
 # Updating
 
-Botex updates itself and its extensions from an [archive](ARCHIVE.md)
-without discarding your changes. This describes how that promise is kept,
-where it stops, and what to do when an update refuses to run.
+Botex updates itself and its extensions without discarding your changes.
+This describes how that promise is kept, where it stops, and what to do
+when an update refuses to run.
+
+Everything comes from one place: a Botex [hub](ARCHIVE.md), set as
+`archive.url`. Extensions and the core are both ordinary packages there, so a
+bot has exactly one upstream to configure, one host to trust and one thing to
+be reachable.
+
+The core originates on GitHub, but the bot never goes there. The hub mirrors
+the repository's releases — `hub mirror-core` fetches each one, repackages it
+as a verified `.botex` and publishes it — and bots install it like any other
+package.
+
+That indirection is the point. A bot on shared hosting is the worst place to
+depend on api.github.com: rate limits are per-IP and shared with every other
+tenant, a private repository would need its token copied onto every bot, and
+`core:update` would break for everyone the day GitHub is unreachable. Mirrored,
+it happens once, on one machine, under the hub operator's control — and what
+bots download is a static file with a published hash.
 
 - [The short version](#the-short-version)
 - [What is yours and what is ours](#what-is-yours-and-what-is-ours)
@@ -57,9 +74,16 @@ moment before each file is written. A package containing
 **blocked** and the whole update refuses to run.
 
 The list lives in one place, `Botex\Update\Inventory::TRACKED`, and the hub
-stages exactly the same directories when it builds a core package.
-`bin/selftest` checks that the two agree, because a drift between them would
-mean shipping files the bot then refuses to write.
+stages exactly the same directories when it builds a core package — whether
+from a checkout or from a mirrored GitHub release. `bin/selftest` checks that
+the two agree, because a drift between them would mean shipping files the bot
+then refuses to write.
+
+It is also why mirroring a GitHub source archive is safe even though the
+repository contains far more than the core. `config/config.php`,
+`.env.example`, `hub/`, `.github/` and the rest are dropped while the package
+is being built, on the hub, before anything is published. They never reach a
+bot at all, so there is nothing for the planner to block.
 
 ### Why extension settings survive
 
@@ -105,7 +129,25 @@ reported and the exit code is non-zero if any failed.
 php bin/console core:check
 php bin/console core:update --dry-run
 php bin/console core:update
+php bin/console core:update --version=1.2.0
 ```
+
+The only setting involved is the one you already have:
+
+```php
+'archive' => [
+    'url' => 'https://archive.example.com',
+    'channel' => 'stable',
+],
+```
+
+The core is published on that hub as a package with the slug `core`, so
+`core:check` is asking the hub what it serves — one HTTP request to a host you
+chose, answered from a static file. Whether the hub mirrors GitHub, and how
+often, is the hub operator's business and invisible here.
+
+If a hub serves no core, `core:check` says so and nothing breaks: extensions
+keep working. That is a normal setup for a hub that only publishes extensions.
 
 What happens, in order:
 
@@ -241,7 +283,8 @@ slug and version against what was requested.
 
 **Install an unsigned package when a public key is configured.** Configuring
 a key means signatures are mandatory. An optional signature protects
-nothing.
+nothing. This covers the core too: a mirrored release is signed with the
+hub's key like anything else it publishes, so the same check applies.
 
 **Run on a PHP version the release requires more than.** Reported as an
 unmet requirement, not forceable.
@@ -257,7 +300,7 @@ become remote code execution.
 
 | Command | Effect |
 | --- | --- |
-| `core:check [--fresh]` | installed vs archive, and whether anything is edited |
+| `core:check [--fresh]` | installed vs what the hub serves, and whether anything is edited |
 | `core:update [--version=] [--dry-run] [--force]` | applies a release, or refuses and says why |
 | `core:diff [--verbose]` | core files you have changed |
 | `core:adopt` | records the current tree as the baseline |
