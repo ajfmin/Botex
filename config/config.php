@@ -55,7 +55,7 @@ return [
         // publish to, not enough for a shared one.
         //
         // Generate a pair with: php hub/bin/hub keygen
-        'public_key' => dirname(__DIR__) . 'storage\keys\botex-signing.pub',
+        'public_key' => '',
 
         // Seconds an archive answer is reused for. The admin panel reads
         // the catalog from this cache, so a webhook never waits on the
