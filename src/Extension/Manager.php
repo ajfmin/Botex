@@ -115,6 +115,11 @@ class Manager
 
         $this->deleteDirectory($manifest->path);
 
+        // The folder is gone, but the cached scan still lists it. Anything
+        // asking afterwards in this same process -- a panel rendering the
+        // list, a reinstall -- would otherwise be told it is still there.
+        $this->registry->refresh();
+
         return "Removed {$manifest->name} and deleted its files.";
     }
 

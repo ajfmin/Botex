@@ -112,6 +112,7 @@ try {
     require __DIR__ . '/selftest.d/package.php';
     require __DIR__ . '/selftest.d/version.php';
     require __DIR__ . '/selftest.d/inventory.php';
+    require __DIR__ . '/selftest.d/registry.php';
     require __DIR__ . '/selftest.d/safety.php';
     require __DIR__ . '/selftest.d/hub.php';
 } finally {

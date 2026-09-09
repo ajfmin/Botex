@@ -218,7 +218,12 @@ class ExtensionInstaller
         }
 
         // The Registry cached its manifests before the swap, so anything
-        // asking about this extension now would see the old version.
+        // asking about this extension now would see the old version -- or,
+        // on a first install, not see it at all and skip its install().
+        $this->registry->refresh();
+
+        // Separately, the archive's cached index still lists the version that
+        // was installed a moment ago, which would show as an update pending.
         $this->cache->flush();
 
         $migrated = $this->migrate($slug);
@@ -260,7 +265,16 @@ class ExtensionInstaller
             $manifest = $this->registry->find($slug);
 
             if ($manifest === null) {
-                return 'the extension is not readable after installing; check extension.json';
+                // Report why, rather than guessing at extension.json. The
+                // Registry already recorded the reason it skipped the folder,
+                // and a parse error names the actual problem; only when there
+                // is no recorded error is the folder genuinely absent.
+                $reason = $this->registry->errors()[$slug] ?? null;
+
+                return $reason !== null
+                    ? "{$slug} could not be read after installing: {$reason}"
+                    : "{$slug} is not in " . basename($this->extensionsPath)
+                        . ' after installing, so its install() did not run.';
             }
 
             $this->registry->entryClass($manifest)::install();

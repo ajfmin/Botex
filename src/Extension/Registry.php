@@ -67,6 +67,23 @@ class Registry
         return $this->manifests;
     }
 
+    /**
+     * Drops the cached scan so the next call reads the directory again.
+     *
+     * Needed because the memoisation above is per-process and the directory
+     * changes underneath it: an installer that writes a new extension and
+     * then asks for it would otherwise be answered from a scan taken before
+     * the files existed, and conclude the extension is not there.
+     *
+     * Errors are cleared too. They describe the previous scan, and keeping
+     * them would report a fault in a folder that has just been replaced.
+     */
+    public function refresh(): void
+    {
+        $this->manifests = null;
+        $this->errors = [];
+    }
+
     /** @return array<string, Manifest> */
     public function enabled(): array
     {
