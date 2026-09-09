@@ -17,6 +17,7 @@ class Sections
     private const CORE = [
         Section\Stats::class,
         Section\Users::class,
+        Section\Wallet::class,
         Section\Extensions::class,
         Section\Updates::class,
     ];

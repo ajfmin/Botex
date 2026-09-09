@@ -16,6 +16,7 @@ class Router
         Callback\Admin\Home::class,
         Callback\Admin\OpenSection::class,
         Callback\Admin\StartUserAction::class,
+        Callback\Admin\StartWalletAction::class,
         Callback\Run::class,
     ];
 
