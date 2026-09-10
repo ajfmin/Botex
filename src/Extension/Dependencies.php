@@ -32,20 +32,37 @@ class Dependencies
      */
     public function unmet(Manifest $manifest): array
     {
+        return $this->check($manifest->slug, $manifest->requires);
+    }
+
+    /**
+     * The same question for an extension that is not installed yet.
+     *
+     * Takes the slug and the requirements on their own, because at install
+     * time the only manifest that exists is the package's -- the archive's
+     * own, which is a different class and describes a folder that is not on
+     * disk.
+     *
+     * @param  array<string, string> $requires slug => constraint
+     * @return array<string>
+     */
+    public function check(string $slug, array $requires): array
+    {
         $problems = [];
 
-        foreach ($manifest->requires as $slug => $constraint) {
-            $required = $this->registry->find($slug);
+        foreach ($requires as $needs => $constraint) {
+            $required = $this->registry->find($needs);
 
             if ($required === null) {
-                $problems[] = "{$manifest->slug} needs the {$slug} extension, which is not installed.";
+                $problems[] = "{$slug} needs the {$needs} extension, which is not installed."
+                    . " Install it with: php bin/console ext:install {$needs}";
 
                 continue;
             }
 
-            if (!$this->registry->isEnabled($slug)) {
-                $problems[] = "{$manifest->slug} needs {$slug}, which is installed but disabled."
-                    . " Enable it with: php bin/console ext:enable {$slug}";
+            if (!$this->registry->isEnabled($needs)) {
+                $problems[] = "{$slug} needs {$needs}, which is installed but disabled."
+                    . " Enable it with: php bin/console ext:enable {$needs}";
 
                 continue;
             }
@@ -54,7 +71,7 @@ class Dependencies
             // not the operator's, so it is reported rather than silently
             // treated as satisfied.
             if ($constraint !== '*' && !Version::satisfies($required->version, $constraint)) {
-                $problems[] = "{$manifest->slug} needs {$slug} {$constraint}, but {$required->version} is installed.";
+                $problems[] = "{$slug} needs {$needs} {$constraint}, but {$required->version} is installed.";
             }
         }
 

@@ -11,10 +11,13 @@
  * unmet and who would be left dangling.
  */
 
+use Botex\Archive\Manifest as ArchiveManifest;
 use Botex\Extension\Dependencies;
 use Botex\Extension\Manifest;
 use Botex\Extension\Registry;
 use Botex\Extension\State;
+use Botex\Update\Plan;
+use Botex\Update\Result;
 
 group('Extension dependencies');
 
@@ -257,4 +260,124 @@ check('a hand-built manifest keeps its requirements', static function () {
     return $manifest->requiresExtension('Shop') && !$manifest->requiresExtension('Other')
         ? true
         : 'requiresExtension() disagreed with the map it was built from';
+});
+
+/**
+ * The archive half of the same guard.
+ *
+ * A requirement that is only enforced for a folder already sitting in
+ * extensions/ is not enforced at all: the usual way an extension arrives
+ * is `ext:install`, which downloads a package. So the requirement has to
+ * survive being published, packed, downloaded and read back, and the
+ * installer has to look at it.
+ */
+check('a package carries requires.extensions', static function () {
+    $manifest = ArchiveManifest::create(
+        type: 'extension',
+        slug: 'Addon',
+        name: 'Addon',
+        version: '1.0.0',
+        files: ['extension.json' => str_repeat('a', 64), 'Extension.php' => str_repeat('b', 64)],
+        requires: ['php' => '>=8.2', 'extensions' => ['Shop' => '>=1.1.0']]
+    );
+
+    $read = ArchiveManifest::fromJson($manifest->toJson());
+
+    if ($read->requiredExtensions() !== ['Shop' => '>=1.1.0']) {
+        return 'the requirement did not survive the round trip: ' . json_encode($read->requires);
+    }
+
+    // php and botex are the archive's business; extensions are the bot's,
+    // so unmet() must not pretend to have an opinion about them.
+    return $read->unmet('1.1.0', '8.3.0') === []
+        ? true
+        : 'unmet() reported an extension requirement it cannot judge';
+});
+
+check('a constraint-less extension requirement means any version', static function () {
+    $manifest = ArchiveManifest::create(
+        type: 'extension',
+        slug: 'Addon',
+        name: 'Addon',
+        version: '1.0.0',
+        files: ['extension.json' => str_repeat('a', 64), 'Extension.php' => str_repeat('b', 64)],
+        requires: ['extensions' => ['Shop' => '']]
+    );
+
+    return $manifest->requiredExtensions() === ['Shop' => '*']
+        ? true
+        : 'an empty constraint became ' . json_encode($manifest->requiredExtensions());
+});
+
+refuses('a requires.extensions that is not a map is rejected', static function () {
+    ArchiveManifest::fromJson((string) json_encode([
+        'format' => 1,
+        'type' => 'extension',
+        'slug' => 'Addon',
+        'name' => 'Addon',
+        'version' => '1.0.0',
+        'files' => ['extension.json' => str_repeat('a', 64), 'Extension.php' => str_repeat('b', 64)],
+        'requires' => ['extensions' => 'Shop'],
+    ]));
+});
+
+check('the installer can ask about a package that is not installed yet', static function () use ($build) {
+    [$registry] = $build('package');
+    $dependencies = new Dependencies($registry);
+
+    // What ExtensionInstaller::plan() does: it has a slug and a map, and
+    // no Extension\Manifest, because the folder is not on disk yet.
+    if ($dependencies->check('Addon', ['Shop' => '>=1.1.0']) !== []) {
+        return 'a met requirement was reported as a problem';
+    }
+
+    $problems = $dependencies->check('Addon', ['Missing' => '*']);
+
+    return $problems !== [] && str_contains($problems[0], 'ext:install Missing')
+        ? true
+        : 'a missing requirement was not reported with the command that fixes it';
+});
+
+group('Install results');
+
+check('a first install reports no backup', static function () {
+    $plan = new Plan(slug: 'Addon', from: '', to: '1.0.0');
+    $plan->add(Plan::ADD, 'extensions/Addon/Extension.php');
+
+    $lines = (new Result(
+        slug: 'Addon',
+        from: '',
+        to: '1.0.0',
+        plan: $plan,
+        backup: ''
+    ))->lines();
+
+    foreach ($lines as $line) {
+        if (str_contains($line, 'previous version')) {
+            return 'a first install claimed a previous version was backed up';
+        }
+    }
+
+    return true;
+});
+
+check('an update over an existing folder does report one', static function () {
+    $plan = new Plan(slug: 'Addon', from: '1.0.0', to: '1.1.0');
+    $plan->add(Plan::REPLACE, 'extensions/Addon/Extension.php');
+
+    $lines = (new Result(
+        slug: 'Addon',
+        from: '1.0.0',
+        to: '1.1.0',
+        plan: $plan,
+        backup: '20260910-135417-e4ed'
+    ))->lines();
+
+    foreach ($lines as $line) {
+        if (str_contains($line, 'storage/backups/20260910-135417-e4ed')) {
+            return true;
+        }
+    }
+
+    return 'an update did not say where the previous version went';
 });

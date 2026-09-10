@@ -5,6 +5,7 @@ namespace Botex\Update;
 use Botex\Archive\Hash;
 use Botex\Archive\Package;
 use Botex\Archive\Version;
+use Botex\Extension\Dependencies;
 use Botex\Extension\Manager;
 use Botex\Extension\Registry;
 use Botex\Extension\State;
@@ -41,6 +42,7 @@ class ExtensionInstaller
         private Registry $registry,
         private State $state,
         private Manager $manager,
+        private Dependencies $dependencies,
         private Inventory $inventory,
         private Backup $backup,
         private Cache $cache,
@@ -76,6 +78,13 @@ class ExtensionInstaller
         }
 
         foreach ($package->manifest->unmet() as $problem) {
+            $plan->problem($problem);
+        }
+
+        // What the package needs from this bot rather than from this core:
+        // the archive cannot answer it, because only the install being
+        // written to knows which extensions are there and switched on.
+        foreach ($this->dependencies->check($slug, $package->manifest->requiredExtensions()) as $problem) {
             $plan->problem($problem);
         }
 
@@ -166,9 +175,14 @@ class ExtensionInstaller
 
         $wasEnabled = $existed ? $this->state->isEnabled($slug) : null;
 
-        $label = $this->backup->begin("install {$slug} {$package->version()}");
+        // Only when there is something to lose. A first install overwrites
+        // nothing, so a backup of it would be an empty directory and a line
+        // telling the operator their previous version is safe -- when there
+        // was no previous version.
+        $label = '';
 
         if ($existed) {
+            $label = $this->backup->begin("install {$slug} {$package->version()}");
             $this->backup->keepDirectory($label, 'extensions/' . $slug);
         }
 
@@ -237,7 +251,7 @@ class ExtensionInstaller
         $this->log->info('Extension installed from the archive', [
             'extension' => $slug,
             'version' => $package->version(),
-            'backup' => $label,
+            'backup' => $label ?: null,
         ]);
 
         return new Result(

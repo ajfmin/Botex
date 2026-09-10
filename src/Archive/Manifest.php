@@ -31,7 +31,8 @@ class Manifest
      * @param string $type            extension|core
      * @param string $slug            folder name for an extension, 'core' for core
      * @param array<string,string> $files    path inside files/ => sha256
-     * @param array<string,string> $requires botex|php => constraint
+     * @param array<string,string|array<string,string>> $requires
+     *        botex|php => constraint, plus `extensions` => slug => constraint
      * @param array<string,string> $commands install|update|remove => CLI line
      * @param array<string,mixed>  $extra    anything the hub adds; not interpreted here
      */
@@ -76,7 +77,9 @@ class Manifest
             version: $version,
             description: $description,
             files: $files,
-            requires: $requires,
+            // Through the same reader the published file goes through, so
+            // what is written now is what will be read back later.
+            requires: self::readRequires($requires),
             commands: $commands,
             changelog: $changelog,
             readme: $readme,
@@ -125,10 +128,7 @@ class Manifest
             version: (string) ($data['version'] ?? ''),
             description: is_string($data['description'] ?? null) ? $data['description'] : '',
             files: $files,
-            requires: array_map('strval', array_filter(
-                (array) ($data['requires'] ?? []),
-                'is_scalar'
-            )),
+            requires: self::readRequires($data['requires'] ?? []),
             commands: array_map('strval', array_filter(
                 (array) ($data['commands'] ?? []),
                 'is_scalar'
@@ -202,9 +202,21 @@ class Manifest
             }
         }
 
-        foreach (array_keys($this->requires) as $key) {
+        foreach ($this->requires as $key => $constraint) {
+            if ($key === 'extensions') {
+                if (!is_array($constraint)) {
+                    throw new ArchiveException('botex.json requires.extensions must be a map of slug to constraint.');
+                }
+
+                continue;
+            }
+
             if (!in_array($key, ['botex', 'php'], true)) {
                 throw new ArchiveException("botex.json requires an unknown thing: '{$key}'.");
+            }
+
+            if (!is_string($constraint)) {
+                throw new ArchiveException("botex.json requires.{$key} must be a constraint string.");
             }
         }
 
@@ -220,7 +232,84 @@ class Manifest
     }
 
     /**
-     * Whether this package can run here.
+     * The `requires` map as it arrives, with each half kept as its own
+     * shape: a constraint string for php and botex, a map for extensions.
+     *
+     * A malformed entry is dropped rather than kept, so validate() only
+     * ever has to reject a key nobody supports -- and an operator is never
+     * refused an install over a constraint they cannot read.
+     *
+     * @param  mixed $raw
+     * @return array<string,string|array<string,string>>
+     */
+    private static function readRequires(mixed $raw): array
+    {
+        $requires = [];
+
+        foreach ((array) $raw as $key => $value) {
+            if (!is_string($key)) {
+                continue;
+            }
+
+            if ($key === 'extensions') {
+                // A wrong *shape* is kept as it is so validate() can refuse
+                // it. Silently dropping it would turn a publisher's typo
+                // into a package that installs with no dependency check at
+                // all -- which is the failure this whole key exists to
+                // prevent. A wrong *value* inside a well-shaped map is a
+                // different matter, and is normalised below.
+                if (!is_array($value)) {
+                    $requires[$key] = $value;
+
+                    continue;
+                }
+
+                $extensions = [];
+
+                foreach ($value as $slug => $constraint) {
+                    if (is_string($slug) && trim($slug) !== '') {
+                        $extensions[trim($slug)] = is_string($constraint) && trim($constraint) !== ''
+                            ? trim($constraint)
+                            : '*';
+                    }
+                }
+
+                if ($extensions !== []) {
+                    $requires[$key] = $extensions;
+                }
+
+                continue;
+            }
+
+            if (is_scalar($value)) {
+                $requires[$key] = (string) $value;
+            }
+        }
+
+        return $requires;
+    }
+
+    /**
+     * Other extensions this package needs, as slug => constraint.
+     *
+     * Not part of unmet(): whether they are there is a question about the
+     * bot this is being installed on, which the archive knows nothing
+     * about. Botex\Extension\Dependencies answers it.
+     *
+     * @return array<string,string>
+     */
+    public function requiredExtensions(): array
+    {
+        $extensions = $this->requires['extensions'] ?? [];
+
+        return is_array($extensions) ? $extensions : [];
+    }
+
+    /**
+     * Whether this package can run on this core and this PHP.
+     *
+     * Says nothing about extensions it depends on -- see
+     * requiredExtensions().
      *
      * @return array<string> unmet requirements, empty when satisfied
      */
