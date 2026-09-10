@@ -654,7 +654,7 @@ Inject `Botex\Telegram\Bot`. It carries three methods (from the
 | --- | --- |
 | `sendMessage(string $text): MessageBuilder` | fluent builder |
 | `editMessage(string $text, int $messageId): MessageBuilder` | fluent builder |
-| `answerCallback(string $callbackId, string $text = ''): array` | sends immediately |
+| `answerCallback(string $callbackId, string $text = '', bool $alert = false): array` | sends immediately; $alert makes the text a popup |
 
 ### 7.1 MessageBuilder
 
@@ -873,7 +873,13 @@ class Confirm implements CallbackInterface
 
 **MUST call `answerCallback()`** in a callback handler. Telegram shows the
 button as loading until you do. Optionally pass text for a toast:
-`answerCallback($id, 'Saved.')`.
+`answerCallback($id, 'Saved.')`, or a third argument for a popup the user
+has to dismiss: `answerCallback($id, 'That did not work.', true)`.
+
+Telegram accepts **one** answer per press, and caps the text at 200
+characters (longer text is cut for you). So a handler that might refuse
+should answer *after* doing the work rather than before: answering early
+to stop the spinner spends the only chance to say why something failed.
 
 ### 9.1 Callback families: MatchesCallback
 
