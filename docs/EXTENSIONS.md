@@ -133,6 +133,33 @@ costs nothing if you never publish:
 | `license` | shown on the package page |
 | `keywords` | array of strings, searchable; first 10 kept |
 
+`requires.extensions` is the exception to "only used when published": it is
+enforced by the bot you are running on.
+
+```json
+"requires": {
+  "php": ">=8.3",
+  "extensions": { "Vpn": ">=1.1.0" }
+}
+```
+
+Each key is another extension's **slug** and each value a constraint in the
+same subset `requires.botex` uses (`*`, `1.2.3`, `>=1.2`, `^1.2`, `~1.2`,
+or a comma-joined AND). `ext:install` and `ext:enable` refuse an extension
+whose requirements are missing, disabled, or too old, and say which:
+
+```
+$ php bin/console ext:enable ManageMyVpn
+ManageMyVpn needs Vpn, which is installed but disabled. Enable it with: php bin/console ext:enable Vpn
+```
+
+The guard runs the other way too: `ext:disable` and `ext:remove` refuse to
+pull an extension out from under something that depends on it, unless you
+add `--force`. Nothing is checked at boot — a dependency that disappears
+by hand shows up as a class that will not autoload — so an extension built
+on another one should still return `[]` from its hooks when the extension
+below it is not loadable.
+
 `version` is free-form as far as the local loader is concerned, but
 publishing requires a real `major.minor.patch` — the archive compares
 versions to decide what is newer, and it is what tells an installed bot

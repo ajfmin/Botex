@@ -12,8 +12,8 @@
  *   php bin/console ext:install <slug> [--version=x.y.z] [--dry-run] [--force]
  *   php bin/console ext:update <slug>|--all [--dry-run] [--force]
  *   php bin/console ext:enable <slug>
- *   php bin/console ext:disable <slug>
- *   php bin/console ext:remove <slug> [--keep-files]
+ *   php bin/console ext:disable <slug> [--force]
+ *   php bin/console ext:remove <slug> [--keep-files] [--force]
  *   php bin/console ext:settings <slug>
  *   php bin/console ext:set <slug> <key> <value>
  *   php bin/console ext:reset <slug> <key>
@@ -334,11 +334,11 @@ try {
             break;
 
         case 'ext:disable':
-            echo $feeder->make(Manager::class)->disable(needSlug($slug)) . PHP_EOL;
+            echo $feeder->make(Manager::class)->disable(needSlug($slug), $force) . PHP_EOL;
             break;
 
         case 'ext:remove':
-            echo $feeder->make(Manager::class)->remove(needSlug($slug), $keepFiles) . PHP_EOL;
+            echo $feeder->make(Manager::class)->remove(needSlug($slug), $keepFiles, $force) . PHP_EOL;
             break;
 
         case 'ext:settings':

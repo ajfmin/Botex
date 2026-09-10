@@ -19,6 +19,7 @@ class Manager
         // needs to delete rows, and the service would drag the Jobs
         // allowlist (and so the Registry) in behind it.
         private \Botex\Repository\JobRepository $jobs,
+        private Dependencies $dependencies,
         private Logger $log
     ) {
     }
@@ -30,6 +31,8 @@ class Manager
     public function install(string $slug): string
     {
         $manifest = $this->manifest($slug);
+
+        $this->requireDependencies($manifest);
 
         $this->registry->entryClass($manifest)::install();
         $this->state->enable($slug);
@@ -45,18 +48,25 @@ class Manager
             return "{$manifest->name} is already enabled.";
         }
 
+        $this->requireDependencies($manifest);
+
         $this->state->enable($slug);
 
         return "Enabled {$manifest->name}.";
     }
 
-    public function disable(string $slug): string
+    /**
+     * @param bool $force switch it off even though something depends on it
+     */
+    public function disable(string $slug, bool $force = false): string
     {
         $manifest = $this->manifest($slug);
 
         if (!$this->state->isEnabled($slug)) {
             return "{$manifest->name} is already disabled.";
         }
+
+        $this->guardDependents($slug, 'Disabling', $force);
 
         $this->state->disable($slug);
 
@@ -67,10 +77,13 @@ class Manager
      * Calls uninstall(), then deletes the folder.
      *
      * @param bool $keepFiles disable and clean up data, leave files on disk
+     * @param bool $force     remove it even though something depends on it
      */
-    public function remove(string $slug, bool $keepFiles = false): string
+    public function remove(string $slug, bool $keepFiles = false, bool $force = false): string
     {
         $manifest = $this->manifest($slug);
+
+        $this->guardDependents($slug, 'Removing', $force);
 
         try {
             $this->registry->entryClass($manifest)::uninstall();
@@ -121,6 +134,44 @@ class Manager
         $this->registry->refresh();
 
         return "Removed {$manifest->name} and deleted its files.";
+    }
+
+    /**
+     * Refuses to switch on an extension whose foundations are not there.
+     *
+     * Checked at install and enable rather than at boot: a missing
+     * dependency shows up at runtime as a class that will not autoload,
+     * on whatever message happens to arrive first, and the operator has
+     * no way to connect that to the extension they just turned on.
+     */
+    private function requireDependencies(Manifest $manifest): void
+    {
+        $problems = $this->dependencies->unmet($manifest);
+
+        if ($problems !== []) {
+            throw new \RuntimeException(implode(' ', $problems));
+        }
+    }
+
+    /**
+     * Refuses to pull the rug out from under another extension.
+     *
+     * Forcible, because an operator sorting out a broken pair has to be
+     * able to switch either one off -- but not by accident.
+     */
+    private function guardDependents(string $slug, string $what, bool $force): void
+    {
+        $dependents = $this->dependencies->dependents($slug);
+
+        if ($dependents === [] || $force) {
+            return;
+        }
+
+        throw new \RuntimeException(
+            "{$what} {$slug} would break " . implode(', ', $dependents)
+            . ', which depends on it. Disable ' . (count($dependents) === 1 ? 'it' : 'them')
+            . ' first, or repeat with --force.'
+        );
     }
 
     private function manifest(string $slug): Manifest
