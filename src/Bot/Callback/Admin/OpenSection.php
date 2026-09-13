@@ -21,6 +21,7 @@ class OpenSection implements CallbackInterface, MatchesCallback
 {
     public function __construct(
         private Bot $bot,
+        private Panel $panel,
         private Sections $sections,
         private Feeder $feeder
     ) {
@@ -61,6 +62,11 @@ class OpenSection implements CallbackInterface, MatchesCallback
 
             return;
         }
+
+        // An inline press edits the message it came from, and an edited
+        // message cannot carry a reply keyboard -- so the keyboard swap
+        // is its own line, and only when it would actually change.
+        $this->panel->useMenu($update, $key);
 
         $this->feeder->make($section)->handle($update);
     }

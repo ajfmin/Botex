@@ -32,6 +32,14 @@ class Worker
     /** Jobs taken per poll, so one busy schedule cannot starve the rest. */
     public const BATCH = 25;
 
+    /**
+     * How long a job whose handler is not loadable waits before trying
+     * again. Long enough not to be a retry loop, short enough that
+     * installing the extension and restarting the worker is the whole
+     * fix rather than the start of one.
+     */
+    public const MISSING_HANDLER_GRACE = 300;
+
     private bool $stopping = false;
 
     private string $workerId = '';
@@ -190,13 +198,31 @@ class Worker
         $class = $this->handlers->findByKey($job->handlerKey());
 
         if ($class === null) {
-            // The handler was renamed, or its extension is disabled or
-            // gone. Pause instead of failing: the row is not broken, it
-            // just has nothing to run right now, and pausing keeps it out
-            // of the due query instead of retrying in a tight loop.
-            $this->jobs->setStatus((int) $job->id, JobStatus::PAUSED);
+            // The handler was renamed, or its extension is disabled, not
+            // yet installed, or -- most often -- simply not in this
+            // worker's map, because the process was already running when
+            // the extension arrived. The row is not broken; it has nothing
+            // to run *right now*.
+            //
+            // So it is deferred rather than paused. Pausing kept it out of
+            // the tight retry loop, which was the point, but nothing ever
+            // brought it back: restarting the worker did not, re-enabling
+            // the extension did not, and re-arming found a row already
+            // there and left it alone. A job that needs a human to notice
+            // it is the wrong default for the commonest cause of this.
+            //
+            // Deferring costs one query per grace period. A row whose
+            // extension is really gone is deleted by ext:remove.
+            $this->jobs->setStatus(
+                (int) $job->id,
+                JobStatus::PENDING,
+                Carbon::now()->addSeconds(self::MISSING_HANDLER_GRACE)
+            );
             $this->log(
-                "Job #{$job->id} ({$job->handlerKey()}) has no handler; paused.",
+                "Job #{$job->id} ({$job->handlerKey()}) has no handler here; retrying in "
+                    . Schedule::humanize(self::MISSING_HANDLER_GRACE)
+                    . '. Is its extension installed and enabled, and has this worker been'
+                    . ' restarted since?',
                 Level::Warning,
                 $this->about($job)
             );

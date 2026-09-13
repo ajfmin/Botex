@@ -114,10 +114,18 @@ class JobService
     }
 
     /**
-     * Schedules a job only if that key is not already present.
+     * Schedules a job unless an equivalent one is already going to run.
      *
      * For recurring jobs registered at boot: the first call arms them, and
      * later calls leave the existing timing alone.
+     *
+     * "Already there" means *active* -- pending or running -- not merely
+     * present. A paused row is a row the worker will never look at again,
+     * and it is exactly what a job whose extension was briefly invisible
+     * leaves behind; returning it here meant re-arming quietly did
+     * nothing, and the thing stayed dead however many times an admin
+     * pressed the button. Done and failed rows are re-armed for the same
+     * reason.
      */
     public function ensure(JobRequest $request): Job
     {
@@ -127,7 +135,7 @@ class JobService
 
         $existing = $this->jobs->findByKey($request->key);
 
-        if ($existing && !$existing->status()->isTerminal()) {
+        if ($existing && $existing->status()->isActive()) {
             return $existing;
         }
 

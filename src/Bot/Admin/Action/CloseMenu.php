@@ -32,14 +32,20 @@ class CloseMenu implements RunnableInterface
     }
 
     public function __construct(
-        private Bot $bot
+        private Bot $bot,
+        private Panel $panel
     ) {
     }
 
     public function handle(Update $update, RunContext $context): void
     {
+        // The labels go with the keyboard: a binding for a keyboard
+        // nobody can see is a binding nothing can honestly reason about.
+        $this->panel->forgetMenu($update);
+
         $this->bot->sendMessage('Admin menu closed. /admin brings it back.')
             ->to($update->chatId())
-            ->replyMarkup(Panel::hideKeyboard());
+            ->replyMarkup(Panel::hideKeyboard())
+            ->execute();
     }
 }

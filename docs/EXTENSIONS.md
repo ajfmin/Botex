@@ -1327,6 +1327,9 @@ screen, indistinguishable from a core one.
 | `static title(): string` | button label on the admin home screen |
 | `handle(Update $update): void` | render the panel |
 
+Optionally also `Botex\Bot\Admin\HasSubMenu`, to put your own screens on
+the admin reply keyboard — see 13.1.
+
 ```php
 namespace Extensions\Shop\Admin;
 
@@ -1397,14 +1400,73 @@ a label an admin can type, so keep it short and distinctive.
 | `static backKeyboard(): array` | one Back button to home |
 | `static hideKeyboard(): array` | markup that removes the reply keyboard |
 | `menu(): array` | the home screen inline, two sections per row (injected instance) |
-| `menuKeyboard(): array` | the same sections as a reply keyboard, bound to the current admin |
+| `menuKeyboard(?string $section = null, Update\|int\|null $audience = null): array` | the sections as a reply keyboard, or one section's own screens |
+| `useMenu(Update, ?string $section = null, bool $force = false): void` | puts the right keyboard on the admin's phone, if it is not already there |
+| `subMenu(string $key): array` | that section's `label => screen` pairs, or `[]` |
+| `forgetMenu(Update\|int): void` | drops the admin's bound labels, for a keyboard being taken away |
 | `show(Update, string, array): void` | edits on an inline press, sends otherwise |
 
 A `refresh()`-style method paired with your own callbacks is the standard
 way to mutate and re-render; `Feedback` does exactly this. The section is
 autowired, so a callback can inject it and call `refresh()` directly.
 
-### 13.1 Section registration rules
+### 13.1 Putting your own screens on the keyboard
+
+One label per section is enough to *reach* a section and not enough to
+*work* in one: everything below the front page is an inline button, and
+inline buttons scroll away behind the next thing said in the chat. A
+section an operator lives in rather than visits can implement
+`Botex\Bot\Admin\HasSubMenu`, and its own screens become as reachable as
+the section itself.
+
+```php
+use Botex\Bot\Admin\{AdminSectionInterface, HasSubMenu};
+
+class ShopSection implements AdminSectionInterface, HasSubMenu
+{
+    /** @return array<string, string> label => screen key */
+    public static function menuItems(): array
+    {
+        return [
+            '🖥 Servers' => 'servers',
+            '📦 Plans' => 'plans',
+        ];
+    }
+
+    public function openScreen(Update $update, string $screen): void
+    {
+        match ($screen) {
+            'servers' => $this->serverList($update),
+            'plans' => $this->planList($update),
+            // An unknown key is a label bound by an older version of this
+            // extension; the front page is the honest answer.
+            default => $this->handle($update),
+        };
+    }
+}
+```
+
+Entering the section swaps the reply keyboard for those screens plus
+`Panel::HOME_LABEL` and `Panel::CLOSE_LABEL`; leaving it puts the sections
+back. Nothing else to register — `Panel` reads `menuItems()` off the
+section class.
+
+- **Labels MUST be unique across the whole panel.** A reply-keyboard tap
+  carries nothing but its text, so two screens sharing a label are the
+  same button. Section `title()`s are labels too.
+- **Match your inline button labels.** The same screen reached two ways
+  should not have two names.
+- The keyboard is sent as its own short message, because a message carries
+  one `reply_markup` and the screen is already carrying its inline
+  buttons. It is sent only when the keyboard would actually change, so
+  navigating inside a section does not post one on every press.
+- Exactly one panel keyboard is bound per admin at a time; `Panel` drops
+  the others when it builds one. Do not bind panel labels yourself.
+- A screen that **starts a flow** is fine, but remember an active flow
+  swallows plain text: while it waits for an answer, the other labels are
+  answers, not buttons. `/cancel` is the way out, as it is everywhere else.
+
+### 13.2 Section registration rules
 
 - Register in `adminSections()`.
 - Core sections (`stats`, `users`, `ext`) are registered first and **cannot

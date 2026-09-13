@@ -4,6 +4,7 @@ namespace Botex\Bot\Admin\Action;
 
 use Botex\Bot\Action\RunContext;
 use Botex\Bot\Action\RunnableInterface;
+use Botex\Bot\Admin\HasSubMenu;
 use Botex\Bot\Admin\Panel;
 use Botex\Bot\Admin\Sections;
 use Botex\Bot\Feeder;
@@ -51,6 +52,7 @@ class OpenSection implements RunnableInterface
         // No key is the home screen: one label on the keyboard reopens the
         // panel itself rather than any section.
         if ($key === '') {
+            $this->panel->useMenu($update);
             $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
 
             return;
@@ -61,7 +63,26 @@ class OpenSection implements RunnableInterface
         if ($section === null) {
             // An extension was removed while its label was still on
             // somebody's keyboard.
+            $this->panel->useMenu($update);
             $this->panel->show($update, 'That panel is no longer available.', $this->panel->menu());
+
+            return;
+        }
+
+        // Swaps the keyboard for this section's own screens, if it has any
+        // and they are not already there. Before the screen, so the screen
+        // is the last thing on the admin's phone.
+        $this->panel->useMenu($update, $key);
+
+        $screen = $context->string('screen');
+
+        if ($screen !== '' && is_subclass_of($section, HasSubMenu::class)) {
+            $instance = $this->feeder->make($section);
+            $known = in_array($screen, array_values($this->panel->subMenu($key)), true);
+
+            // An unknown screen is a label bound by an older version of the
+            // extension; its front page is the honest answer, not silence.
+            $known ? $instance->openScreen($update, $screen) : $instance->handle($update);
 
             return;
         }
