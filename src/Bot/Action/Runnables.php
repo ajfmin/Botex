@@ -21,7 +21,10 @@ class Runnables
      *
      * @var array<class-string<RunnableInterface>>
      */
-    private const CORE = [];
+    private const CORE = [
+        \Botex\Bot\Admin\Action\OpenSection::class,
+        \Botex\Bot\Admin\Action\CloseMenu::class,
+    ];
 
     /** @var array<string, class-string<RunnableInterface>>|null */
     private ?array $map = null;

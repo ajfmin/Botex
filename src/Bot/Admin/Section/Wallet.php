@@ -8,7 +8,6 @@ use Botex\Bot\Admin\WalletAction;
 use Botex\Service\WalletService;
 use Botex\Telegram\Builders\Keyboard\InlineButton;
 use Botex\Telegram\Builders\Keyboard\Keyboard;
-use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 
 /**
@@ -21,7 +20,7 @@ use Botex\Telegram\Update;
 class Wallet implements AdminSectionInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private WalletService $wallet
     ) {
     }
@@ -66,10 +65,7 @@ class Wallet implements AdminSectionInterface
             ->row(InlineButton::callback('Back', Panel::HOME))
             ->build();
 
-        $this->bot->editMessage(implode(PHP_EOL, $lines), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($keyboard);
+        $this->panel->show($update, implode(PHP_EOL, $lines), $keyboard);
     }
 
     private function escape(string $value): string

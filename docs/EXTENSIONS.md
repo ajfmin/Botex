@@ -1332,14 +1332,14 @@ namespace Extensions\Shop\Admin;
 
 use Botex\Bot\Admin\{AdminSectionInterface, Panel};
 use Botex\Telegram\Builders\Keyboard\{InlineButton, Keyboard};
-use Botex\Telegram\{Bot, Update};
+use Botex\Telegram\Update;
 
 class ShopSection implements AdminSectionInterface
 {
     public const TOGGLE = 'shop:admin:toggle:';
 
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private OrderRepository $orders
     ) {}
 
@@ -1349,10 +1349,7 @@ class ShopSection implements AdminSectionInterface
 
     public function handle(Update $update): void
     {
-        $this->bot->editMessage($this->text(), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($this->keyboard());
+        $this->panel->show($update, $this->text(), $this->keyboard());
     }
 
     /** Re-renders after a change, reusing the same message. */
@@ -1360,10 +1357,7 @@ class ShopSection implements AdminSectionInterface
     {
         $text = $notice === '' ? $this->text() : $notice . PHP_EOL . PHP_EOL . $this->text();
 
-        $this->bot->editMessage($text, (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($this->keyboard());
+        $this->panel->show($update, $text, $this->keyboard());
     }
 
     private function keyboard(): array
@@ -1379,9 +1373,21 @@ class ShopSection implements AdminSectionInterface
 `Callback\Admin\OpenSection`, which is already gated, so the admin check
 lives in exactly one place. Your section is unreachable without it.
 
-**Use `editMessage()`, not `sendMessage()`** — panels navigate in place.
+**Render with `Panel::show()`, not `editMessage()` or `sendMessage()`.**
+The panel is reachable two ways and they need different verbs. An inline
+press leaves one of our messages on screen, so the screen is edited in
+place and the conversation does not grow. A tap on the admin **reply
+keyboard** arrives as the admin's own text message, and editing that is
+something Telegram refuses — a section that calls `editMessage()` there
+renders as silence. `show()` picks the right one from the update, so a
+section written against it works from both without knowing which it was.
+
 Always offer a way back: `Panel::HOME` (`'admin:home'`) as callback data,
 or `Panel::backKeyboard()` for a ready-made single-button keyboard.
+
+Your section appears on the reply keyboard automatically, under its
+`title()` — there is nothing to register for it. A title is therefore also
+a label an admin can type, so keep it short and distinctive.
 
 | `Botex\Bot\Admin\Panel` | |
 | --- | --- |
@@ -1389,7 +1395,10 @@ or `Panel::backKeyboard()` for a ready-made single-button keyboard.
 | `Panel::SECTION` | `'admin:s:'` |
 | `static section(string $key): string` | builds `admin:s:<key>` |
 | `static backKeyboard(): array` | one Back button to home |
-| `menu(): array` | the home screen, two sections per row (injected instance) |
+| `static hideKeyboard(): array` | markup that removes the reply keyboard |
+| `menu(): array` | the home screen inline, two sections per row (injected instance) |
+| `menuKeyboard(): array` | the same sections as a reply keyboard, bound to the current admin |
+| `show(Update, string, array): void` | edits on an inline press, sends otherwise |
 
 A `refresh()`-style method paired with your own callbacks is the standard
 way to mutate and re-render; `Feedback` does exactly this. The section is
@@ -1720,7 +1729,7 @@ use Botex\Telegram\Bot;
 class ExpireOrders implements JobInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private OrderRepository $orders
     ) {}
 

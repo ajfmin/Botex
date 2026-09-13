@@ -1,6 +1,6 @@
 {
-    "version": "1.0.4",
-    "generated_at": "2026-09-12T19:33:09+00:00",
+    "version": "1.0.5",
+    "generated_at": "2026-09-13T08:12:43+00:00",
     "files": [
         "bin/console",
         "bin/selftest",
@@ -38,6 +38,8 @@
         "src/Bot/Action/RunnableInterface.php",
         "src/Bot/Action/Runnables.php",
         "src/Bot/Action/UnknownAction.php",
+        "src/Bot/Admin/Action/CloseMenu.php",
+        "src/Bot/Admin/Action/OpenSection.php",
         "src/Bot/Admin/AdminSectionInterface.php",
         "src/Bot/Admin/Flow/AdjustBalanceFlow.php",
         "src/Bot/Admin/Flow/ManageUserFlow.php",

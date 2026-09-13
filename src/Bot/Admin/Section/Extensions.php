@@ -5,7 +5,6 @@ namespace Botex\Bot\Admin\Section;
 use Botex\Bot\Admin\AdminSectionInterface;
 use Botex\Bot\Admin\Panel;
 use Botex\Extension\Registry;
-use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 
 /**
@@ -15,7 +14,7 @@ use Botex\Telegram\Update;
 class Extensions implements AdminSectionInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private Registry $registry
     ) {
     }
@@ -58,10 +57,7 @@ class Extensions implements AdminSectionInterface
         $lines[] = '';
         $lines[] = '<i>Manage with php bin/console ext:list</i>';
 
-        $this->bot->editMessage(implode(PHP_EOL, $lines), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup(Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
     }
 
     private function escape(string $value): string

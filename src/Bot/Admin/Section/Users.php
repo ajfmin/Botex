@@ -8,13 +8,12 @@ use Botex\Bot\Admin\UserAction;
 use Botex\Service\UserService;
 use Botex\Telegram\Builders\Keyboard\InlineButton;
 use Botex\Telegram\Builders\Keyboard\Keyboard;
-use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 
 class Users implements AdminSectionInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private UserService $users
     ) {
     }
@@ -59,9 +58,6 @@ class Users implements AdminSectionInterface
             ->row(InlineButton::callback('Back', Panel::HOME))
             ->build();
 
-        $this->bot->editMessage(implode(PHP_EOL, $lines), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($keyboard);
+        $this->panel->show($update, implode(PHP_EOL, $lines), $keyboard);
     }
 }

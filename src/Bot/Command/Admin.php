@@ -32,11 +32,20 @@ class Admin implements CommandInterface
         ];
     }
 
+    /**
+     * Both keyboards, in two messages, because Telegram allows one
+     * reply_markup per message and these are different kinds of markup.
+     *
+     * The keyboard goes first and quietly; the panel follows and is the
+     * message the admin actually reads and navigates in place.
+     */
     public function handle(Update $update): void
     {
-        $this->bot->sendMessage('<b>Admin panel</b>')
+        $this->bot->sendMessage('Admin menu is on the keyboard below.')
             ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($this->panel->menu());
+            ->replyMarkup($this->panel->menuKeyboard())
+            ->execute();
+
+        $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
     }
 }

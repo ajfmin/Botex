@@ -36,9 +36,6 @@ class Home implements CallbackInterface
             $this->bot->answerCallback($callbackId);
         }
 
-        $this->bot->editMessage('<b>Admin panel</b>', (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup($this->panel->menu());
+        $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
     }
 }

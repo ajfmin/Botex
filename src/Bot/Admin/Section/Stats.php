@@ -6,13 +6,12 @@ use Botex\Bot\Admin\AdminSectionInterface;
 use Botex\Bot\Admin\Panel;
 use Botex\Service\UserService;
 use Botex\Service\WalletService;
-use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 
 class Stats implements AdminSectionInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private UserService $users,
         private WalletService $wallet
     ) {
@@ -50,9 +49,6 @@ class Stats implements AdminSectionInterface
         $lines[] = 'Opened: ' . $wallet['wallets'];
         $lines[] = 'Held balance: ' . htmlspecialchars($wallet['formatted'], ENT_QUOTES, 'UTF-8');
 
-        $this->bot->editMessage(implode(PHP_EOL, $lines), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup(Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
     }
 }

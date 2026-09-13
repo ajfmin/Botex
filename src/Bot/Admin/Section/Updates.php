@@ -5,7 +5,6 @@ namespace Botex\Bot\Admin\Section;
 use Botex\Bot\Admin\AdminSectionInterface;
 use Botex\Bot\Admin\Panel;
 use Botex\Botex;
-use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 use Botex\Update\Availability;
 
@@ -25,7 +24,7 @@ use Botex\Update\Availability;
 class Updates implements AdminSectionInterface
 {
     public function __construct(
-        private Bot $bot,
+        private Panel $panel,
         private Availability $availability
     ) {
     }
@@ -159,10 +158,7 @@ class Updates implements AdminSectionInterface
     /** @param array<string> $lines */
     private function send(array $lines, Update $update): void
     {
-        $this->bot->editMessage(implode(PHP_EOL, $lines), (int) $update->messageId())
-            ->to($update->chatId())
-            ->parseMode('HTML')
-            ->replyMarkup(Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
     }
 
     private function trim(string $value, int $length): string
