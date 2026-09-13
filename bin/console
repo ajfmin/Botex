@@ -29,6 +29,7 @@
  *   php bin/console core:update [--version=] [--dry-run] [--force]
  *   php bin/console core:diff [--verbose]
  *   php bin/console core:adopt
+ *   php bin/console core:manifest [--force]
  *   php bin/console core:rollback [<backup>]
  *   php bin/console core:backups
  *
@@ -76,6 +77,7 @@ use Botex\Service\JobService;
 use Botex\Service\UserService;
 use Botex\Service\WalletService;
 use Botex\Update\Backup;
+use Botex\Update\CoreManifest;
 use Botex\Update\CoreUpdater;
 use Botex\Update\ExtensionInstaller;
 use Botex\Update\Inventory;
@@ -760,10 +762,63 @@ try {
                 }
             }
 
-            $recorded = $inventory->record();
+            // Only what this release says it ships. Adopting the whole tree
+            // is how a command an operator wrote in src/Bot/Command/ used
+            // to become core-owned -- and then be deleted by the next
+            // release that did not ship it.
+            $manifest = $feeder->make(CoreManifest::class);
+            $official = $manifest->exists() ? $manifest->paths() : null;
+
+            $recorded = $inventory->record(null, $official);
+            $mine = $inventory->userOwned();
 
             echo "Recorded {$recorded} core file(s) as the baseline for " . Botex::VERSION . '.' . PHP_EOL;
             echo 'Local changes are now measured against these.' . PHP_EOL;
+
+            if ($official === null) {
+                echo PHP_EOL . 'Note: ' . CoreManifest::FILE . ' is missing, so every file under the core' . PHP_EOL;
+                echo 'directories was adopted -- including any you added yourself. Generate it' . PHP_EOL;
+                echo 'with "core:manifest" from a clean checkout to tell the two apart.' . PHP_EOL;
+                break;
+            }
+
+            if ($mine !== []) {
+                echo PHP_EOL . count($mine) . ' file(s) are yours and were left out of the baseline:' . PHP_EOL;
+
+                foreach (array_slice($mine, 0, $verbose ? count($mine) : 10) as $path) {
+                    echo '  + ' . $path . PHP_EOL;
+                }
+
+                if (!$verbose && count($mine) > 10) {
+                    echo '  ... and ' . (count($mine) - 10) . ' more (-v for all)' . PHP_EOL;
+                }
+
+                echo PHP_EOL . 'No core update will replace or delete these.' . PHP_EOL;
+            }
+
+            break;
+
+        // Writes the list of files this release ships. A maintainer's
+        // command, run from a clean checkout before publishing: on a bot
+        // with custom files it would bless those as core, which is the
+        // thing the list exists to prevent.
+        case 'core:manifest':
+            $manifest = $feeder->make(CoreManifest::class);
+            $inventory = $feeder->make(Inventory::class);
+            $paths = array_keys($inventory->current());
+
+            if (!$force) {
+                echo 'This records ' . count($paths) . ' file(s) as belonging to Botex ' . Botex::VERSION . '.' . PHP_EOL;
+                echo PHP_EOL . 'Run it only from a clean checkout: anything under src/, bootstrap/,' . PHP_EOL;
+                echo 'public/, bin/ or docs/ that you wrote yourself would be recorded as core' . PHP_EOL;
+                echo 'and then owned by the updater.' . PHP_EOL;
+                echo PHP_EOL . 'Re-run with --force to write ' . CoreManifest::FILE . '.' . PHP_EOL;
+                break;
+            }
+
+            $written = $manifest->write($paths);
+
+            echo "Wrote {$written} path(s) to " . CoreManifest::FILE . ' for ' . Botex::VERSION . '.' . PHP_EOL;
             break;
 
         case 'core:backups':

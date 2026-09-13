@@ -54,7 +54,7 @@ php bin/console core:update --dry-run
 A core update writes inside these, and nowhere else:
 
 ```
-src/  bootstrap/  public/  bin/  docs/  composer.json
+src/  bootstrap/  public/  bin/  docs/  composer.json  core.json
 ```
 
 It never writes any of these:
@@ -92,13 +92,68 @@ and settings overrides live in `storage/`, so replacing an extension's files
 cannot touch them. An update restores the enabled state it found, and only
 enables an extension on a **first** install.
 
-### The one thing to know
+### Ownership is by manifest, not by directory
 
-**Custom behaviour belongs in an extension.** Anything you write under
-`extensions/` is invisible to a core update — no conflicts, ever. A custom
-command added by editing `src/` will conflict with every release that
-touches the same file. That is the difference between "my changes survive
-updates" and "I fight the updater". See [EXTENSIONS.md](EXTENSIONS.md).
+Being inside `src/` is what makes a path *writable* by an update. It is not
+what makes it **ours**. Those are two different questions, and the second is
+answered by two lists:
+
+```
+in storage/inventory.json  (what this install was shipped)   -> core-owned
+in the new release         (what the next version ships)     -> core-owned
+in neither, but on disk                                      -> yours
+```
+
+So a file you add under a core directory — `src/Bot/Command/Profile.php` —
+is yours. An update will not replace it, will not delete it, and will not
+count it when deciding whether anything conflicts. The folder it sits in
+changes none of that.
+
+`core.json` in the project root is the release's own list of what it ships.
+It is how a fresh install tells the two apart before it has ever talked to
+an archive, which is exactly when `core:adopt` runs. It is rewritten from
+the package after every update, so it cannot drift from what was installed.
+
+Deletion follows the same rule, in one direction only:
+
+```
+was in the old manifest AND is gone from the new one  -> deleted
+absent from the new release, but never ours           -> left alone
+```
+
+### When a release wants a path you already used
+
+If you wrote `src/Bot/Command/Stats.php` and a later Botex ships its own,
+the update **stops**:
+
+```
+Core update conflict:
+
+  src/Bot/Command/Stats.php
+
+A user-owned file already exists at a path introduced by the new Botex version.
+
+Rename or move the custom file before updating.
+```
+
+Nothing is written, and `--force` does not apply. Forcing means "discard my
+edit to a core file"; there is no core version of this file to fall back to,
+so the only thing forcing could do is delete something that was never the
+core's. Renaming your file — or moving it into an extension — is the fix.
+
+### Where to put custom behaviour
+
+**Small, bot-specific commands** go in `src/Bot/Command/`. Drop in a class
+implementing `CommandInterface` and it is discovered and registered: no
+manifest, no extension class, and the updater leaves it alone. See
+[EXTENSIONS.md](EXTENSIONS.md).
+
+**Anything modular or installable** — its own tables, settings, admin
+screens, something you would ship to another bot — belongs in `extensions/`,
+which a core update never looks at.
+
+What still conflicts is **editing a file the core shipped**. That is a real
+conflict and always will be: the release changed the same file you did.
 
 ## Updating extensions
 
@@ -303,7 +358,8 @@ become remote code execution.
 | `core:check [--fresh]` | installed vs what the hub serves, and whether anything is edited |
 | `core:update [--version=] [--dry-run] [--force]` | applies a release, or refuses and says why |
 | `core:diff [--verbose]` | core files you have changed |
-| `core:adopt` | records the current tree as the baseline |
+| `core:adopt` | records the files this release ships as the baseline |
+| `core:manifest [--force]` | rewrites core.json; for maintainers, from a clean checkout |
 | `core:backups` | what can be rolled back to |
 | `core:rollback [<backup>]` | restores one; the newest by default |
 

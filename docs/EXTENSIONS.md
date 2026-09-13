@@ -19,6 +19,66 @@ independent enough to be jumped into; cross-references use the same
 
 ---
 
+## 0. Do you need an extension?
+
+Often not. A command that only makes sense for **this** bot — `/profile`,
+`/support`, `/buyserver` — can be a single class in `src/Bot/Command/`:
+
+```php
+<?php
+
+namespace Botex\Bot\Command;
+
+use Botex\Telegram\Bot;
+use Botex\Telegram\Update;
+
+class Profile implements CommandInterface
+{
+    public function __construct(
+        private Bot $bot          // the container fills this in, as usual
+    ) {
+    }
+
+    public static function command(): string { return '/profile'; }
+    public static function button(): string  { return 'Profile'; }
+    public static function middleware(): array { return []; }
+
+    public function handle(Update $update): void
+    {
+        $this->bot->sendMessage('Your profile.')->to($update->chatId());
+    }
+}
+```
+
+That is the whole thing. No `extension.json`, no `Extension` class, no
+registration call: `Botex\Bot\Command\Discovery` finds it, `Commands` lists
+it, and the router dispatches it through the Feeder exactly like a core
+command.
+
+**How discovery decides.** The file name is the class name, as PSR-4
+already requires — `Profile.php` is `Botex\Bot\Command\Profile`. A file is
+skipped when the class does not exist under that name (a different
+namespace, a different class name), when it does not implement
+`CommandInterface`, or when it cannot be instantiated (abstract, interface,
+trait). Core's own classes are never returned as custom, which is also why
+`Unknown` — a real command class that is deliberately not typeable — stays
+out of the verb map.
+
+**Precedence.** Core first, then your commands, then extensions'. A custom
+`/start` cannot displace the core one; a custom command *does* win over an
+extension that claims the same verb.
+
+**The updater leaves it alone.** A core release owns only the files it
+ships. Yours is not one of them, so it is never replaced and never deleted
+— see [UPDATING.md](UPDATING.md). The one thing to avoid is picking a name
+a future release might also use; if that happens the update stops and asks
+you to rename, rather than overwriting your file.
+
+**Use an extension instead when** the feature has its own tables, settings,
+admin screens, jobs or Run actions, or when you want to install it on
+another bot. Everything from section 1 onwards is about those.
+---
+
 ## 1. Runtime map
 
 ```

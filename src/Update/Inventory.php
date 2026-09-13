@@ -21,6 +21,12 @@ use Botex\Support\Config;
  * inventory, so everything would look modified; `core:adopt` is the
  * explicit way to say "what is on disk now is my baseline", and until it
  * has been run the updater says so rather than guessing.
+ *
+ * **What it records is what makes a file core-owned.** A path under src/
+ * that was never recorded belongs to the operator -- a command they wrote
+ * next to the shipped ones -- and the updater neither replaces nor deletes
+ * it. Directory location decides only where a core package is *allowed* to
+ * write (see isTracked()); this record decides what it actually owns.
  */
 class Inventory
 {
@@ -41,9 +47,10 @@ class Inventory
      * config/ and .env are absent deliberately: those are the operator's
      * configuration, and replacing them is exactly the "reset my changes"
      * failure this whole subsystem exists to prevent. composer.json is
-     * tracked because a core release can add a dependency.
+     * tracked because a core release can add a dependency, and core.json
+     * because it is the release's own list of what it ships.
      */
-    public const TRACKED_FILES = ['composer.json'];
+    public const TRACKED_FILES = ['composer.json', CoreManifest::FILE];
 
     private string $root;
 
@@ -219,18 +226,78 @@ class Inventory
     }
 
     /**
-     * Records the current tree as the baseline.
+     * Whether this record was narrowed to a release's own file list.
      *
-     * @param  string|null $version the core version now on disk
-     * @return int         files recorded
+     * False for one written by a core older than the ownership rule, which
+     * hashed every file under the tracked directories -- including any the
+     * operator had added. Such a record still measures edits correctly; it
+     * just cannot be trusted to say what the core *owns*, so a deletion
+     * planned from it is checked against the release manifest first.
      */
-    public function record(?string $version = null): int
+    public function isScoped(): bool
+    {
+        return ($this->read()['scoped'] ?? false) === true;
+    }
+
+    /**
+     * Whether this path is one the core owns.
+     *
+     * The whole ownership question, in one line: it is ours if we recorded
+     * shipping it. Everything else under a tracked directory is the
+     * operator's, however core-looking the folder is.
+     */
+    public function owns(string $path): bool
+    {
+        return isset($this->hashes()[str_replace('\\', '/', $path)]);
+    }
+
+    /**
+     * Files on disk inside the core surface that the core does not own.
+     *
+     * The operator's own: a command in src/Bot/Command/, a helper beside
+     * it. Reported so they can be shown, never so they can be written to.
+     *
+     * @return array<string>
+     */
+    public function userOwned(): array
+    {
+        $mine = array_keys(array_diff_key($this->current(), $this->hashes()));
+
+        sort($mine);
+
+        return $mine;
+    }
+
+    /**
+     * Records the tree as the baseline.
+     *
+     * @param  string|null        $version the core version now on disk
+     * @param  array<string>|null $only    record just these paths -- the
+     *                                     release's own file list -- so
+     *                                     files the core never shipped are
+     *                                     not adopted as core-owned
+     * @return int                files recorded
+     */
+    public function record(?string $version = null, ?array $only = null): int
     {
         $hashes = $this->current();
+
+        if ($only !== null) {
+            $hashes = array_intersect_key($hashes, array_flip(array_map(
+                static fn (string $path): string => str_replace('\\', '/', $path),
+                $only
+            )));
+        }
 
         $this->write([
             'version' => $version ?? Botex::VERSION,
             'recorded_at' => gmdate('c'),
+            // Whether this record was narrowed to the release's own
+            // file list. Its absence means an older core wrote it, by
+            // hashing the whole tree -- so it may name files the core
+            // never shipped, and cannot be trusted to authorise a
+            // deletion on its own.
+            'scoped' => $only !== null,
             'tree' => Hash::tree($hashes),
             'files' => $hashes,
         ]);
@@ -254,6 +321,9 @@ class Inventory
         $this->write([
             'version' => $version,
             'recorded_at' => gmdate('c'),
+            // Exact by construction: these hashes came from a
+            // package, so they are that release and nothing else.
+            'scoped' => true,
             'tree' => Hash::tree($hashes),
             'files' => $hashes,
         ]);

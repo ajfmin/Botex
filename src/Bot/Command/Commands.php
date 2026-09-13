@@ -36,18 +36,39 @@ class Commands
     private ?array $map = null;
 
     public function __construct(
-        private Registry $extensions
+        private Registry $extensions,
+        private Discovery $discovery
     ) {
     }
 
     /**
-     * Every command, core first, so an extension cannot shadow /start.
+     * Every command, in the order that decides who wins a clash.
+     *
+     * Core first, so nothing can shadow /start. Then the operator's own
+     * commands from src/Bot/Command/, then the extensions': a bot's own
+     * command beats one that arrived with an installed feature, which is
+     * the order an operator would expect when they wrote one of them
+     * themselves.
      *
      * @return array<class-string<CommandInterface>>
      */
     public function all(): array
     {
-        return $this->list ??= [...self::CORE, ...$this->extensions->commands()];
+        return $this->list ??= [
+            ...self::CORE,
+            ...$this->discovery->commands(),
+            ...$this->extensions->commands(),
+        ];
+    }
+
+    /**
+     * The commands found next to the shipped ones, without core's.
+     *
+     * @return array<class-string<CommandInterface>>
+     */
+    public function custom(): array
+    {
+        return $this->discovery->commands();
     }
 
     /**

@@ -36,6 +36,7 @@ class CoreUpdater
     public function __construct(
         private Downloader $downloader,
         private Inventory $inventory,
+        private CoreManifest $manifest,
         private Backup $backup,
         private Cache $cache,
         private Logger $log
@@ -105,6 +106,15 @@ class CoreUpdater
                 continue;
             }
 
+            // On disk, but the core never shipped it: the operator put it
+            // there, and this release happens to want the same path. There
+            // is no core version of it to fall back to, so the updater
+            // stops rather than choosing which of the two survives.
+            if (!$this->inventory->owns($path)) {
+                $plan->add(Plan::COLLISION, $path, 'yours, and new in this release');
+                continue;
+            }
+
             if (Hash::matches($shipped, $current)) {
                 $plan->add(Plan::IDENTICAL, $path);
                 continue;
@@ -122,6 +132,13 @@ class CoreUpdater
             $plan->add(Plan::REPLACE, $path);
         }
 
+        // An inventory written before ownership was a concept lists every
+        // file that was on disk, the operator's included. It is still a
+        // fine record of edits, but it cannot authorise a deletion on its
+        // own -- so the installed release's manifest is asked as well, and
+        // only files it claims are considered the core's.
+        $unscoped = !$this->inventory->isScoped() && $this->manifest->exists();
+
         // A file this release drops. Only ever one that was shipped before
         // and is unmodified: anything else is the operator's and stays.
         foreach (array_keys($recorded) as $path) {
@@ -130,6 +147,10 @@ class CoreUpdater
             }
 
             if (!Inventory::isTracked($path)) {
+                continue;
+            }
+
+            if ($unscoped && !$this->manifest->ships($path)) {
                 continue;
             }
 
@@ -215,6 +236,13 @@ class CoreUpdater
             throw new UpdateException(
                 "Refusing to update the core: " . implode('; ', $plan->problems()) . '.'
             );
+        }
+
+        // Before the --force check, deliberately: forcing means "discard my
+        // edit to a core file", and there is no edit here to discard -- the
+        // file is the operator's outright.
+        if ($plan->collisions() !== []) {
+            throw new UpdateException($this->explainCollisions($plan));
         }
 
         if ($plan->conflicts() !== [] && !$force) {
@@ -332,6 +360,11 @@ class CoreUpdater
             if ($removed !== []) {
                 $this->inventory->forget($removed, $package->version());
             }
+
+            // The release's own list of what it ships, so a later
+            // `core:adopt` on this install knows which files are ours
+            // without having to ask the archive.
+            $this->manifest->write(array_keys($package->manifest->files), $package->version());
         } catch (\Throwable $e) {
             $this->deleteDirectory($staging);
 
@@ -438,8 +471,13 @@ class CoreUpdater
 
         // The tree changed underneath the record, so it is rebuilt from what
         // is now on disk. The version is whatever the restored Botex.php
-        // says, which is why it is read back rather than assumed.
-        $this->inventory->record($this->versionOnDisk());
+        // says, which is why it is read back rather than assumed -- and the
+        // restored release's own file list scopes it, so files the operator
+        // added are not adopted as core on the way back.
+        $this->inventory->record(
+            $this->versionOnDisk(),
+            $this->manifest->exists() ? $this->manifest->paths() : null
+        );
         $this->cache->flush();
 
         $this->log->warning('Rolled back to a backup', [
@@ -498,7 +536,40 @@ class CoreUpdater
             '  revert those files, then core:update',
             '  core:update --force          apply anyway; the originals go to storage/backups/',
             '',
-            'Custom commands and settings belong in an extension, which no core update touches.',
+            'A file you added yourself is never in this list: the core only owns what it shipped.',
+        ]);
+    }
+
+    /**
+     * The message for a release landing on a file the operator owns.
+     *
+     * Says which file and what to do, and offers no flag: renaming is the
+     * only resolution that keeps both, and picking a winner on the
+     * operator's behalf is exactly what this whole class exists to avoid.
+     */
+    private function explainCollisions(Plan $plan): string
+    {
+        $collisions = $plan->collisions();
+
+        $lines = [
+            'Core update conflict:',
+            '',
+        ];
+
+        foreach ($collisions as $path) {
+            $lines[] = '  ' . $path;
+        }
+
+        return implode(PHP_EOL, [
+            ...$lines,
+            '',
+            count($collisions) === 1
+                ? 'A user-owned file already exists at a path introduced by the new Botex version.'
+                : 'User-owned files already exist at paths introduced by the new Botex version.',
+            '',
+            'Rename or move the custom file before updating.',
+            'Nothing has been written, and --force does not apply: the core has no version of',
+            'this file to restore, so forcing could only mean deleting yours.',
         ]);
     }
 

@@ -19,6 +19,17 @@ class Plan
     public const CONFLICT = 'conflict';
     public const BLOCKED = 'blocked';
 
+    /**
+     * A file the operator owns, at a path the release wants to introduce.
+     *
+     * Different from a conflict: a conflict is an edited *core* file, and
+     * --force resolves it by saying "discard my edit". This is a file the
+     * core never shipped, so there is no core version to fall back to and
+     * nothing --force could mean except "delete something of mine". The
+     * operator renames one of the two; the updater does not choose.
+     */
+    public const COLLISION = 'collision';
+
     /** @var array<string, array{action:string, path:string, note:string}> */
     private array $entries = [];
 
@@ -95,17 +106,25 @@ class Plan
         return $this->paths(self::BLOCKED);
     }
 
+    /** Paths where a release would land on a file the operator owns. */
+    public function collisions(): array
+    {
+        return $this->paths(self::COLLISION);
+    }
+
     /**
      * Whether this plan may be applied.
      *
-     * A conflict or a blocked path is fatal by default: those are the two
-     * cases where proceeding would either discard the operator's work or
-     * write somewhere a package has no business writing.
+     * A conflict, a collision or a blocked path is fatal by default: those
+     * are the cases where proceeding would discard the operator's work,
+     * overwrite a file that was never the core's, or write somewhere a
+     * package has no business writing.
      */
     public function isSafe(): bool
     {
         return $this->problems === []
             && $this->conflicts() === []
+            && $this->collisions() === []
             && $this->blocked() === [];
     }
 
@@ -131,6 +150,7 @@ class Plan
             self::DELETE => ['%d deleted', '%d deleted'],
             self::IDENTICAL => ['%d unchanged', '%d unchanged'],
             self::CONFLICT => ['%d conflict', '%d conflicts'],
+            self::COLLISION => ['%d collision', '%d collisions'],
             self::BLOCKED => ['%d blocked', '%d blocked'],
         ] as $action => [$one, $many]) {
             $count = $this->count($action);
@@ -158,6 +178,7 @@ class Plan
     {
         $marks = [
             self::CONFLICT => '!',
+            self::COLLISION => '!',
             self::BLOCKED => 'x',
             self::ADD => '+',
             self::REPLACE => '~',
@@ -169,6 +190,7 @@ class Plan
         // full; routine changes are counted.
         $limits = [
             self::CONFLICT => PHP_INT_MAX,
+            self::COLLISION => PHP_INT_MAX,
             self::BLOCKED => PHP_INT_MAX,
             self::ADD => 10,
             self::REPLACE => 10,
