@@ -54,7 +54,7 @@ php bin/console core:update --dry-run
 A core update writes inside these, and nowhere else:
 
 ```
-src/  bootstrap/  public/  bin/  docs/  composer.json  core.json
+src/  bootstrap/  public/  bin/  docs/  composer.json
 ```
 
 It never writes any of these:
@@ -109,10 +109,21 @@ is yours. An update will not replace it, will not delete it, and will not
 count it when deciding whether anything conflicts. The folder it sits in
 changes none of that.
 
-`core.json` in the project root is the release's own list of what it ships.
-It is how a fresh install tells the two apart before it has ever talked to
-an archive, which is exactly when `core:adopt` runs. It is rewritten from
-the package after every update, so it cannot drift from what was installed.
+Both lists already exist, which is the point: `storage/inventory.json` is
+written from the package every time one is applied, and the incoming
+package carries its own `botex.json` file map. Nothing new is persisted,
+and nothing is added to the writable surface to make this work — a file
+placed there to carry ownership would be refused as an unknown path by
+every bot still running an older core, locking them out of updating.
+
+Keep the two questions apart:
+
+```
+writable surface  →  where may a package write at all?
+ownership         →  which paths inside it are actually ours?
+```
+
+`src/Bot/Command/Profile.php` is inside the surface and still yours.
 
 Deletion follows the same rule, in one direction only:
 
@@ -358,8 +369,7 @@ become remote code execution.
 | `core:check [--fresh]` | installed vs what the hub serves, and whether anything is edited |
 | `core:update [--version=] [--dry-run] [--force]` | applies a release, or refuses and says why |
 | `core:diff [--verbose]` | core files you have changed |
-| `core:adopt` | records the files this release ships as the baseline |
-| `core:manifest [--force]` | rewrites core.json; for maintainers, from a clean checkout |
+| `core:adopt` | re-records the files it already owns; adopts everything only on a fresh install |
 | `core:backups` | what can be rolled back to |
 | `core:rollback [<backup>]` | restores one; the newest by default |
 

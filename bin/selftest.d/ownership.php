@@ -3,22 +3,27 @@
 /**
  * Who owns which file, and what an update is therefore allowed to touch.
  *
- * The rule these checks exist to hold: a file under src/ belongs to Botex
- * only if a Botex release shipped it. Everything else there is the
- * operator's -- a command they wrote beside the shipped ones -- and an
- * update must leave it exactly as it found it.
+ * Two lists answer it, and the updater already has both: the inventory,
+ * which is what this install was shipped, and the incoming package's own
+ * file list, which is what the next version ships. A path on disk that is
+ * in neither belongs to the operator -- a command they wrote beside the
+ * shipped ones -- and an update must leave it exactly as it found it.
  *
  * Getting this wrong is silent and expensive: the old rule was "src/ is
  * ours", which adopted a custom command as core and then deleted it on the
  * first release that did not ship one by that name.
+ *
+ * Ownership is not the same question as the writable surface. The surface
+ * says where a package may write at all -- src/, bootstrap/, public/,
+ * bin/, docs/, composer.json -- and it stays exactly as narrow as it was.
+ * A file can sit inside it and still be the operator's.
  */
 
-use Botex\Archive\Hash;
 use Botex\Archive\Package;
 use Botex\Bot\Command\Discovery;
-use Botex\Update\CoreManifest;
 use Botex\Update\Inventory;
 use Botex\Update\Plan;
+use Botex\Update\UpdateException;
 use Botex\Support\Config;
 
 group('File ownership');
@@ -35,7 +40,7 @@ $write = static function (string $path, string $contents): void {
 /**
  * A throwaway install: a root with a core tree, and an Inventory over it.
  *
- * @return array{0:string, 1:Inventory, 2:CoreManifest}
+ * @return array{0:string, 1:Inventory}
  */
 $install = static function (string $name, array $files) use ($temp, $write): array {
     $root = $temp . '/own-' . $name;
@@ -44,11 +49,9 @@ $install = static function (string $name, array $files) use ($temp, $write): arr
         $write($root . '/' . $path, $contents);
     }
 
-    $config = new Config([
+    return [$root, new Inventory(new Config([
         'paths' => ['root' => $root, 'storage' => $root . '/storage'],
-    ]);
-
-    return [$root, new Inventory($config), new CoreManifest($config)];
+    ]))];
 };
 
 /** A real core package over a set of files. */
@@ -77,16 +80,49 @@ $tree = [
     'src/Bot/Command/Admin.php' => "<?php // admin v1\n",
     'src/Bot/Command/Profile.php' => "<?php // mine\n",
     'src/Bot/Command/BuyServer.php' => "<?php // mine too\n",
-    'core.json' => '{}',
 ];
 
-$shipped = ['core.json', 'src/Botex.php', 'src/Bot/Command/Start.php', 'src/Bot/Command/Admin.php'];
+/** What the installed release shipped, i.e. the old core manifest. */
+$shipped = ['src/Botex.php', 'src/Bot/Command/Start.php', 'src/Bot/Command/Admin.php'];
 
-check('adopt records only what the release shipped', static function () use ($install, $tree, $shipped) {
-    [, $inventory, $manifest] = $install('adopt', $tree);
-    $manifest->write($shipped, '1.0.0');
+check('the writable surface is unchanged', static function () {
+    // The security boundary, not the ownership rule. Nothing was added to
+    // it to make custom commands work, and a root file claiming to be core
+    // metadata is still refused like any other stranger.
+    if (Inventory::TRACKED_FILES !== ['composer.json']) {
+        return 'tracked root files: ' . implode(', ', Inventory::TRACKED_FILES);
+    }
 
-    $inventory->record('1.0.0', $manifest->paths());
+    foreach (['core.json', 'core-manifest.json', 'storage/core-manifest.json'] as $path) {
+        if (Inventory::isTracked($path)) {
+            return "'{$path}' must not be writable by a package, but is";
+        }
+    }
+
+    return Inventory::isTracked('composer.json') && Inventory::isTracked('src/Botex.php')
+        ? true
+        : 'a real core path stopped being tracked';
+});
+
+check('no root core.json is needed', static function () {
+    // Ownership is answered by the inventory and the package; nothing is
+    // read from the project root.
+    return !is_file(dirname(__DIR__, 2) . '/core.json')
+        ? true
+        : 'a root core.json is back';
+});
+
+check('adopt keeps the ownership set it already had', static function () use ($install, $tree, $shipped) {
+    [, $inventory] = $install('adopt', $tree);
+
+    // What an update leaves behind: exactly the release's files.
+    $inventory->adopt(array_combine($shipped, array_map(
+        static fn (string $p): string => hash('sha256', $p),
+        $shipped
+    )), '1.0.0');
+
+    // Re-adopting re-reads those files; it does not go looking for more.
+    $inventory->record(null, array_keys($inventory->hashes()));
     $recorded = array_keys($inventory->hashes());
 
     foreach (['src/Bot/Command/Profile.php', 'src/Bot/Command/BuyServer.php'] as $mine) {
@@ -97,15 +133,28 @@ check('adopt records only what the release shipped', static function () use ($in
 
     sort($shipped);
 
-    return $recorded === $shipped
+    return $recorded === $shipped ? true : 'recorded: ' . implode(', ', $recorded);
+});
+
+check('adopt without a baseline says what it did', static function () use ($install, $tree) {
+    [, $inventory] = $install('fresh', $tree);
+
+    // A fresh clone has nothing to narrow to, so the whole tree is taken
+    // and the operator is told. The first update makes it exact.
+    if ($inventory->isUsable()) {
+        return 'a fresh install reported a usable baseline';
+    }
+
+    $inventory->record();
+
+    return $inventory->owns('src/Bot/Command/Profile.php')
         ? true
-        : 'recorded: ' . implode(', ', $recorded);
+        : 'the fallback was expected to take everything';
 });
 
 check('the custom files are reported as the operator\'s', static function () use ($install, $tree, $shipped) {
-    [, $inventory, $manifest] = $install('mine', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [, $inventory] = $install('mine', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     $mine = $inventory->userOwned();
     sort($mine);
@@ -116,9 +165,8 @@ check('the custom files are reported as the operator\'s', static function () use
 });
 
 check('ownership is by record, not by directory', static function () use ($install, $tree, $shipped) {
-    [, $inventory, $manifest] = $install('owns', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [, $inventory] = $install('owns', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     if (!$inventory->owns('src/Bot/Command/Start.php')) {
         return 'a shipped command was not recognised as core-owned';
@@ -127,35 +175,6 @@ check('ownership is by record, not by directory', static function () use ($insta
     return !$inventory->owns('src/Bot/Command/Profile.php')
         ? true
         : 'a custom command in a core directory was treated as core-owned';
-});
-
-check('a manifest cannot widen the core surface', static function () use ($install, $tree) {
-    [, , $manifest] = $install('widen', $tree);
-
-    // A manifest edited to claim configuration must not make config/ or
-    // .env core-owned, whatever it says.
-    $manifest->write(['src/Botex.php', 'config/config.php', '.env', '../escape.php'], '1.0.0');
-
-    $paths = $manifest->paths();
-
-    foreach (['config/config.php', '.env', '../escape.php'] as $forbidden) {
-        if (in_array($forbidden, $paths, true)) {
-            return "'{$forbidden}' got into the manifest";
-        }
-    }
-
-    return in_array('src/Botex.php', $paths, true) ? true : 'the real path was dropped too';
-});
-
-check('the manifest always lists itself', static function () use ($install, $tree) {
-    [, , $manifest] = $install('self', $tree);
-    $manifest->write(['src/Botex.php'], '1.0.0');
-
-    // Otherwise core.json is user-owned, and the next release that ships
-    // one collides with it -- blocking every update.
-    return in_array(CoreManifest::FILE, $manifest->paths(), true)
-        ? true
-        : 'the manifest left itself out';
 });
 
 group('Core updates and user files');
@@ -167,33 +186,29 @@ group('Core updates and user files');
  * and what the package carries -- so the rest are built as cheaply as
  * their constructors allow rather than mocked.
  */
-$plan = static function (Inventory $inventory, Package $package, ?CoreManifest $manifest = null) use ($temp): Plan {
+$updater = static function (Inventory $inventory) use ($temp): \Botex\Update\CoreUpdater {
     $blank = new Config(['paths' => ['root' => $temp . '/nowhere', 'storage' => $temp . '/nowhere/storage']]);
     $client = new \Botex\Remote\Client($blank);
     $cache = new \Botex\Remote\Cache($blank);
 
-    $updater = new \Botex\Update\CoreUpdater(
+    return new \Botex\Update\CoreUpdater(
         downloader: new \Botex\Remote\Downloader(
             $client,
             new \Botex\Remote\Catalog($client, $cache, $blank),
             new \Botex\Remote\Signature($blank)
         ),
         inventory: $inventory,
-        // The install's own manifest when there is one: the legacy
-        // path reads it to decide what an old inventory really owned.
-        manifest: $manifest ?? new CoreManifest($blank),
         backup: new \Botex\Update\Backup($blank),
         cache: $cache,
         log: new \Botex\Support\Log\Logger($temp . '/nowhere/logs')
     );
-
-    return $updater->plan($package);
 };
 
+$plan = static fn (Inventory $inventory, Package $package): Plan => $updater($inventory)->plan($package);
+
 check('a custom command survives an update', static function () use ($install, $package, $tree, $shipped, $plan) {
-    [$root, $inventory, $manifest] = $install('survive', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [$root, $inventory] = $install('survive', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     // The next release: the same two commands, changed, plus a new one.
     $release = $package('survive', [
@@ -220,10 +235,34 @@ check('a custom command survives an update', static function () use ($install, $
     return $result->isSafe() ? true : 'the plan was not safe: ' . implode('; ', $result->problems());
 });
 
+check('an unrelated user file under src/ survives too', static function () use ($install, $package, $plan, $write, $temp) {
+    [$root, $inventory] = $install('scratch', [
+        'src/Botex.php' => "<?php // v1\n",
+        'src/Support/MyHelper.php' => "<?php // mine\n",
+        'src/notes.md' => "mine as well\n",
+    ]);
+
+    $inventory->record('1.0.0', ['src/Botex.php']);
+
+    $release = $package('scratch', ['src/Botex.php' => "<?php // v2\n"]);
+    $result = $plan($inventory, $release);
+
+    foreach (['src/Support/MyHelper.php', 'src/notes.md'] as $mine) {
+        if ($result->paths(Plan::DELETE) !== [] && in_array($mine, $result->paths(Plan::DELETE), true)) {
+            return "{$mine} was planned for deletion";
+        }
+
+        if (!is_file($root . '/' . $mine)) {
+            return "{$mine} is gone";
+        }
+    }
+
+    return true;
+});
+
 check('core files are updated and new ones added', static function () use ($install, $package, $tree, $shipped, $plan) {
-    [, $inventory, $manifest] = $install('update', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [, $inventory] = $install('update', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     $release = $package('update', [
         'src/Botex.php' => "<?php // v2\n",
@@ -245,14 +284,12 @@ check('core files are updated and new ones added', static function () use ($inst
         : 'the new core command was not planned as an addition';
 });
 
-check('a core file the release drops is deleted', static function () use ($install, $package, $tree, $plan) {
-    [, $inventory, $manifest] = $install('drop', $tree);
+check('a core file the release drops is deleted', static function () use ($install, $package, $tree, $shipped, $plan) {
+    [, $inventory] = $install('drop', $tree);
+    $inventory->record('1.0.0', $shipped);
 
-    // Admin.php was shipped by the installed version...
-    $manifest->write(['core.json', 'src/Botex.php', 'src/Bot/Command/Start.php', 'src/Bot/Command/Admin.php'], '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
-
-    // ...and is gone from the next one.
+    // Admin.php was shipped by the installed version and is gone from the
+    // next one.
     $release = $package('drop', [
         'src/Botex.php' => "<?php // v2\n",
         'src/Bot/Command/Start.php' => "<?php // start v2\n",
@@ -266,9 +303,8 @@ check('a core file the release drops is deleted', static function () use ($insta
 });
 
 check('a file the core never shipped is never deleted', static function () use ($install, $package, $tree, $shipped, $plan) {
-    [, $inventory, $manifest] = $install('keep', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [, $inventory] = $install('keep', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     // A release that ships almost nothing: every recorded file is absent
     // from it, but the operator's are not the core's to remove.
@@ -286,9 +322,8 @@ check('a file the core never shipped is never deleted', static function () use (
 });
 
 check('a release landing on a user file is refused', static function () use ($install, $package, $tree, $shipped, $plan) {
-    [$root, $inventory, $manifest] = $install('collide', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [$root, $inventory] = $install('collide', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     // The operator's own Stats.php, and a release that introduces one.
     file_put_contents($root . '/src/Bot/Command/Stats.php', "<?php // mine\n");
@@ -316,59 +351,49 @@ check('a release landing on a user file is refused', static function () use ($in
         : 'the user file changed while planning';
 });
 
-check('an inventory from an older core cannot delete user files', static function () use (
+check('--force does not take over a user-owned path', static function () use (
     $install,
     $package,
     $tree,
     $shipped,
-    $plan
+    $updater
 ) {
-    [, $inventory, $manifest] = $install('legacy', $tree);
-    $manifest->write($shipped, '1.0.0');
+    [$root, $inventory] = $install('force', $tree);
+    $inventory->record('1.0.0', $shipped);
 
-    // What a core older than this rule wrote: every file on disk, the
-    // operator's two commands included, and no 'scoped' marker.
-    $inventory->record('1.0.0');
+    file_put_contents($root . '/src/Bot/Command/Stats.php', "<?php // mine\n");
 
-    if ($inventory->isScoped()) {
-        return 'a whole-tree record claimed to be scoped';
-    }
-
-    if (!$inventory->owns('src/Bot/Command/Profile.php')) {
-        return 'the legacy record was expected to name the user file';
-    }
-
-    // A release that ships neither of them. Under the old rule both would
-    // be deleted; the installed manifest says they were never ours.
-    $release = $package('legacy', [
+    $release = $package('force', [
         'src/Botex.php' => "<?php // v2\n",
         'src/Bot/Command/Start.php' => "<?php // start v2\n",
         'src/Bot/Command/Admin.php' => "<?php // admin v2\n",
+        'src/Bot/Command/Stats.php' => "<?php // theirs\n",
     ]);
 
-    $deletions = $plan($inventory, $release, $manifest)->paths(Plan::DELETE);
+    $updater = $updater($inventory);
+    $plan = $updater->plan($release);
 
-    foreach (['src/Bot/Command/Profile.php', 'src/Bot/Command/BuyServer.php'] as $mine) {
-        if (in_array($mine, $deletions, true)) {
-            return "{$mine} would be deleted on the first update after upgrading";
+    // --force means "discard my edit to a core file". There is no core
+    // version of this one to fall back to, so forcing could only mean
+    // deleting something that was never the core's.
+    try {
+        $updater->apply($release, $plan, force: true);
+    } catch (UpdateException $e) {
+        if (!str_contains($e->getMessage(), 'Stats.php')) {
+            return 'refused, but not about the colliding file: ' . $e->getMessage();
         }
+
+        return file_get_contents($root . '/src/Bot/Command/Stats.php') === "<?php // mine\n"
+            ? true
+            : 'the user file was overwritten before the refusal';
     }
 
-    return true;
-});
-
-check('a scoped record says so', static function () use ($install, $tree, $shipped) {
-    [, $inventory, $manifest] = $install('scoped', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
-
-    return $inventory->isScoped() ? true : 'a narrowed record did not mark itself';
+    return 'a forced update took over a user-owned path';
 });
 
 check('an edited core file is still a conflict', static function () use ($install, $package, $tree, $shipped, $plan) {
-    [$root, $inventory, $manifest] = $install('edited', $tree);
-    $manifest->write($shipped, '1.0.0');
-    $inventory->record('1.0.0', $manifest->paths());
+    [$root, $inventory] = $install('edited', $tree);
+    $inventory->record('1.0.0', $shipped);
 
     // The operator edits a file the core owns, and upstream changes it too.
     file_put_contents($root . '/src/Bot/Command/Start.php', "<?php // my edit\n");
@@ -390,6 +415,70 @@ check('an edited core file is still a conflict', static function () use ($instal
     return $result->collisions() === []
         ? true
         : 'an edited core file was mistaken for a user-owned one';
+});
+
+check('a package writing outside the surface is still blocked', static function () use ($install, $package, $tree, $shipped, $plan) {
+    [, $inventory] = $install('blocked', $tree);
+    $inventory->record('1.0.0', $shipped);
+
+    // Including a root file that claims to be core metadata: the surface
+    // is the surface, whatever a package calls its payload.
+    $release = $package('blocked', [
+        'src/Botex.php' => "<?php // v2\n",
+        'core.json' => "{}\n",
+        'config/config.php' => "<?php // theirs\n",
+        '.env' => "STOLEN=1\n",
+    ]);
+
+    $result = $plan($inventory, $release);
+    $blocked = $result->blocked();
+
+    foreach (['core.json', 'config/config.php', '.env'] as $path) {
+        if (!in_array($path, $blocked, true)) {
+            return "'{$path}' was not blocked: " . implode(', ', $blocked);
+        }
+    }
+
+    return !$result->isSafe() ? true : 'a plan with blocked paths was considered safe';
+});
+
+check('an inventory from an older core cannot delete user files', static function () use (
+    $install,
+    $package,
+    $tree,
+    $plan
+) {
+    [, $inventory] = $install('legacy', $tree);
+
+    // What a core older than this rule wrote: every file on disk, the
+    // operator's two commands included, and no 'scoped' marker.
+    $inventory->record('1.0.0');
+
+    if ($inventory->isScoped()) {
+        return 'a whole-tree record claimed to be scoped';
+    }
+
+    // A release that ships neither of them. Under the old rule both would
+    // be deleted; with no way to tell which entries were really the
+    // core's, this update deletes nothing at all.
+    $release = $package('legacy', [
+        'src/Botex.php' => "<?php // v2\n",
+        'src/Bot/Command/Start.php' => "<?php // start v2\n",
+        'src/Bot/Command/Admin.php' => "<?php // admin v2\n",
+    ]);
+
+    $result = $plan($inventory, $release);
+
+    return $result->paths(Plan::DELETE) === []
+        ? true
+        : 'deletions were planned from an untrustworthy record: ' . implode(', ', $result->paths(Plan::DELETE));
+});
+
+check('a scoped record says so', static function () use ($install, $tree, $shipped) {
+    [, $inventory] = $install('scoped', $tree);
+    $inventory->record('1.0.0', $shipped);
+
+    return $inventory->isScoped() ? true : 'a narrowed record did not mark itself';
 });
 
 group('Custom command discovery');

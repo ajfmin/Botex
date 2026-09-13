@@ -36,7 +36,6 @@ class CoreUpdater
     public function __construct(
         private Downloader $downloader,
         private Inventory $inventory,
-        private CoreManifest $manifest,
         private Backup $backup,
         private Cache $cache,
         private Logger $log
@@ -133,11 +132,12 @@ class CoreUpdater
         }
 
         // An inventory written before ownership was a concept lists every
-        // file that was on disk, the operator's included. It is still a
-        // fine record of edits, but it cannot authorise a deletion on its
-        // own -- so the installed release's manifest is asked as well, and
-        // only files it claims are considered the core's.
-        $unscoped = !$this->inventory->isScoped() && $this->manifest->exists();
+        // file that was on disk, the operator's included. It is a fine
+        // record of edits, but it cannot authorise a deletion: there is no
+        // way to tell which of its entries the core actually shipped. So
+        // this update deletes nothing, the next one -- planned against the
+        // exact record this one writes -- deletes normally.
+        $unscoped = !$this->inventory->isScoped();
 
         // A file this release drops. Only ever one that was shipped before
         // and is unmodified: anything else is the operator's and stays.
@@ -150,7 +150,7 @@ class CoreUpdater
                 continue;
             }
 
-            if ($unscoped && !$this->manifest->ships($path)) {
+            if ($unscoped) {
                 continue;
             }
 
@@ -274,6 +274,17 @@ class CoreUpdater
      */
     public function apply(Package $package, Plan $plan, bool $force = false): Result
     {
+        // Re-checked here rather than trusted from update(), because this
+        // is the last gate before anything is written and apply() is
+        // reachable on its own -- an offline install from a local .botex
+        // does not go through update() at all. Not forceable: --force
+        // discards *your edit to a core file*, and a path the core never
+        // owned has no core version to fall back to, so forcing could only
+        // mean deleting something of yours.
+        if ($plan->collisions() !== []) {
+            throw new UpdateException($this->explainCollisions($plan));
+        }
+
         $staging = $this->inventory->root() . '/storage/.botex-core-' . bin2hex(random_bytes(4));
         $label = $this->backup->begin("core {$plan->from} -> {$plan->to}");
 
@@ -361,10 +372,6 @@ class CoreUpdater
                 $this->inventory->forget($removed, $package->version());
             }
 
-            // The release's own list of what it ships, so a later
-            // `core:adopt` on this install knows which files are ours
-            // without having to ask the archive.
-            $this->manifest->write(array_keys($package->manifest->files), $package->version());
         } catch (\Throwable $e) {
             $this->deleteDirectory($staging);
 
@@ -472,11 +479,11 @@ class CoreUpdater
         // The tree changed underneath the record, so it is rebuilt from what
         // is now on disk. The version is whatever the restored Botex.php
         // says, which is why it is read back rather than assumed -- and the
-        // restored release's own file list scopes it, so files the operator
-        // added are not adopted as core on the way back.
+        // paths already recorded scope it, so a file the operator added is
+        // not adopted as core on the way back.
         $this->inventory->record(
             $this->versionOnDisk(),
-            $this->manifest->exists() ? $this->manifest->paths() : null
+            $this->inventory->isUsable() ? array_keys($this->inventory->hashes()) : null
         );
         $this->cache->flush();
 

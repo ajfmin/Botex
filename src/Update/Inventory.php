@@ -47,10 +47,15 @@ class Inventory
      * config/ and .env are absent deliberately: those are the operator's
      * configuration, and replacing them is exactly the "reset my changes"
      * failure this whole subsystem exists to prevent. composer.json is
-     * tracked because a core release can add a dependency, and core.json
-     * because it is the release's own list of what it ships.
+     * tracked because a core release can add a dependency.
+     *
+     * Nothing else belongs here. Widening this list to carry ownership
+     * information would be the wrong lever twice over: it is the list of
+     * what a package may *write*, and every bot running an older core
+     * would refuse a package containing the new entry -- which is exactly
+     * how an ownership file added here locked installs out of updating.
      */
-    public const TRACKED_FILES = ['composer.json', CoreManifest::FILE];
+    public const TRACKED_FILES = ['composer.json'];
 
     private string $root;
 
