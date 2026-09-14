@@ -97,7 +97,10 @@ return [
         // JobContext::heartbeat().
         'lease' => (int) ($_ENV['JOB_LEASE'] ?? 300),
 
-        // Attempts a failing job gets before it is marked failed.
+        // Attempts a failing job gets before the worker stops retrying it
+        // on the backoff. A one-shot job is then marked failed; a
+        // repeating one goes back on its own schedule, so an outage
+        // cannot permanently kill a recurring job.
         'max_attempts' => (int) ($_ENV['JOB_MAX_ATTEMPTS'] ?? 3),
 
         // Finished rows are kept this long, then removed by the core

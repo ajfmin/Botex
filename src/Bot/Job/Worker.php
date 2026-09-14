@@ -111,7 +111,7 @@ class Worker
             while (!$this->stopping) {
                 $worked = $this->tick();
 
-                    if ($this->lostLease || !$this->keepLease()) {
+                if ($this->lostLease || !$this->keepLease()) {
                     // Someone else owns the system now. Stop rather than
                     // run a second copy of every schedule.
                     $this->log('Lost the worker lease; stopping.', Level::Warning);
@@ -347,23 +347,64 @@ class Worker
             ]);
     }
 
-    /** Records the failure and lets JobService decide about a retry. */
+    /**
+     * Records the failure and decides when, if ever, to try again.
+     *
+     * Three outcomes, in order of preference:
+     *
+     *   - attempts left: retry soon, on the backoff;
+     *   - out of attempts but the job *repeats*: back on its own
+     *     schedule, with the attempt count reset;
+     *   - out of attempts and nothing more was due anyway: retired.
+     *
+     * The middle case is the one worth spelling out. A recurring job's
+     * schedule is the valuable thing about it, and a run failing says
+     * something about right now -- a panel rebooting, a network blip --
+     * not about the next one an hour away. Retiring the row on three bad
+     * minutes meant an hourly janitor could be killed for good by an
+     * outage shorter than one of its own intervals, and nothing short of
+     * a person noticing would bring it back. The failure is still counted
+     * and still on the row for anyone looking.
+     */
     private function failed(\Botex\Model\Job $job, \Throwable $e): void
     {
-        $retryAt = $this->service->retryAt($job);
+        $nextRun = $this->service->retryAt($job);
+        $retrying = $nextRun !== null;
+        $rescheduled = false;
 
-        if (!$this->jobs->fail((int) $job->id, $e->getMessage(), $retryAt, $this->workerId)) {
+        if (!$retrying && $job->repeats() && !$this->isLastRun($job)) {
+            $nextRun = $job->schedule()->nextAfter(Carbon::now());
+            $rescheduled = $nextRun !== null;
+        }
+
+        if (!$this->jobs->fail((int) $job->id, $e->getMessage(), $nextRun, $this->workerId, $rescheduled)) {
             $this->lostJob($job, 'failed with: ' . $e->getMessage());
 
             return;
         }
 
-        $this->log("Job #{$job->id} ({$job->handlerKey()}) failed: " . $e->getMessage()
-            . ($retryAt ? ', retry ' . $retryAt->toDateTimeString() : ', giving up'),
+        $outcome = match (true) {
+            $retrying => ', retry ' . $nextRun?->toDateTimeString(),
+            $rescheduled => ', out of attempts; back on schedule ' . $nextRun?->toDateTimeString(),
+            default => ', giving up',
+        };
+
+        $this->log("Job #{$job->id} ({$job->handlerKey()}) failed: " . $e->getMessage() . $outcome,
             Level::Error,
-            $this->about($job) + ['retry_at' => $retryAt?->toDateTimeString()],
+            $this->about($job) + ['next_run_at' => $nextRun?->toDateTimeString()],
             $e
         );
+    }
+
+    /**
+     * Whether this run was the last one a capped repeating job had left.
+     *
+     * A job asked to run five times has nothing to go back to on the
+     * fifth, succeed or fail.
+     */
+    private function isLastRun(\Botex\Model\Job $job): bool
+    {
+        return !$job->runsForever() && (int) $job->runs + 1 >= (int) $job->max_runs;
     }
 
     /**

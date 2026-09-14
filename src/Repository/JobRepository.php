@@ -156,23 +156,33 @@ class JobRepository
     }
 
     /**
-     * Records a failed attempt, scheduling a retry or giving up.
+     * Records a failed attempt, scheduling the next one or giving up.
      *
      * Ownership-guarded like complete(): a lapsed worker reporting its
      * failure must not overwrite the retry schedule of the run that
      * replaced it.
      *
-     * @return bool false when the caller no longer owns the job
+     * @param  ?Carbon $nextRun       when to try again, or null to retire
+     * @param  bool    $resetAttempts true when $nextRun is the job's own
+     *                                schedule rather than a retry, so the
+     *                                next run starts from a clean count
+     * @return bool    false when the caller no longer owns the job
      */
-    public function fail(int $id, string $error, ?Carbon $retryAt, string $workerId = ''): bool
-    {
+    public function fail(
+        int $id,
+        string $error,
+        ?Carbon $nextRun,
+        string $workerId = '',
+        bool $resetAttempts = false
+    ): bool {
         $now = Carbon::now();
 
         return $this->owned($id, $workerId)
             ->update([
-                'status' => $retryAt ? JobStatus::PENDING->value : JobStatus::FAILED->value,
+                'status' => $nextRun ? JobStatus::PENDING->value : JobStatus::FAILED->value,
                 'failures' => new Expression('failures + 1'),
-                'next_run_at' => $retryAt,
+                'attempts' => $resetAttempts ? 0 : new Expression('attempts'),
+                'next_run_at' => $nextRun,
                 'locked_by' => null,
                 'lease_until' => null,
                 'finished_at' => $now,

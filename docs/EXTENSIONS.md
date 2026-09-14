@@ -1957,14 +1957,36 @@ foreach ($this->orders->stale() as $order) {
 `Botex\Bot\Job\JobStatus`: `PENDING`, `RUNNING`, `DONE`, `FAILED`, `PAUSED`,
 with `isActive()`, `isTerminal()`, `isResumable()`, `label()`.
 
-Backoff after a failed attempt is `[30, 120, 600, 1800]` seconds, then the
-job is marked `FAILED` once `max_attempts` (config `jobs.max_attempts`,
-default 3) is used up. Per-job override: `JobRequest::attempts(5)`.
+Backoff after a failed attempt is `[30, 120, 600, 1800]` seconds. What
+happens when `max_attempts` (config `jobs.max_attempts`, default 3) runs
+out depends on whether the job repeats. Per-job override:
+`JobRequest::attempts(5)`.
 
-**A missing handler pauses the job, it does not fail it.** If your
-extension is disabled or the handler renamed, the worker sets `PAUSED` and
-logs it — so re-enabling the extension and calling `resume()` picks the work
-back up instead of having lost it.
+**A repeating job goes back on its own schedule, not to `FAILED`.** Its
+attempt count resets and the next run happens at the usual interval. A
+recurring schedule is the valuable thing about such a job, and a run
+failing says something about *right now* — a panel rebooting, a network
+blip — not about the next one an hour away. Retiring the row meant an
+hourly job could be killed permanently by an outage shorter than one of
+its own intervals, with nothing but a person noticing to bring it back.
+The failure is still counted in `failures` and the reason is still on
+`last_error`, so `jobs:list` shows it.
+
+**A one-shot job is marked `FAILED`** and stops. There is nothing to go
+back to. Same for the final run of a capped repeating job.
+
+**A missing handler defers the job, it does not pause or fail it.** If the
+extension is disabled, not yet installed, or simply absent from *this*
+worker's handler map — the usual cause being a `jobs:work` process that was
+already running when the extension arrived — the row stays `PENDING` and is
+pushed out by `Worker::MISSING_HANDLER_GRACE` (300s). So it recovers on its
+own once the handler is loadable, rather than needing `resume()`. Rows whose
+extension is really gone are deleted by `ext:remove`.
+
+Re-arming repairs, too: `JobService::ensure()` rewrites a keyed row that is
+not **active** (pending or running). A paused, failed or finished job is one
+the worker will never look at again, so `ensure()` treating it as "already
+there" would make re-arming silently do nothing.
 
 **Handlers should be idempotent.** A lease can lapse mid-run (a killed
 worker, a handler slower than the lease) and the job then gets reclaimed, so
@@ -1994,7 +2016,7 @@ shape: bounded process lifetime, no lease to babysit.
 | --- | --- | --- | --- |
 | `jobs.sleep` | `JOB_SLEEP` | 5 | seconds between polls when nothing is due |
 | `jobs.lease` | `JOB_LEASE` | 300 | how long a claim stays owned |
-| `jobs.max_attempts` | `JOB_MAX_ATTEMPTS` | 3 | attempts before `FAILED` |
+| `jobs.max_attempts` | `JOB_MAX_ATTEMPTS` | 3 | attempts before a one-shot fails, or a repeating job returns to its schedule |
 | `jobs.keep_finished` | `JOB_KEEP_FINISHED` | 604800 | how long finished rows are kept |
 
 `jobs.lease` **MUST comfortably exceed your slowest job**, or a still-running
@@ -2308,7 +2330,7 @@ and is editable from the panel.
 | `actions.prune_chance` | `ACTION_PRUNE_CHANCE` | `200` | prune expired actions roughly every N updates |
 | `jobs.sleep` | `JOB_SLEEP` | `5` | worker poll interval when idle |
 | `jobs.lease` | `JOB_LEASE` | `300` | how long a claimed job stays owned |
-| `jobs.max_attempts` | `JOB_MAX_ATTEMPTS` | `3` | attempts before `FAILED` |
+| `jobs.max_attempts` | `JOB_MAX_ATTEMPTS` | `3` | attempts before a one-shot fails, or a repeating job returns to its schedule |
 | `jobs.keep_finished` | `JOB_KEEP_FINISHED` | `604800` | retention for finished rows; `0` disables the prune job |
 | `logging.level` | `LOG_LEVEL` | `info` | quietest level written to the file; `debug`–`critical` or `0`–`5` |
 | `logging.keep_days` | `LOG_KEEP_DAYS` | `14` | log files older than this are deleted; `0` keeps everything |
