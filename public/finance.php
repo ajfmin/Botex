@@ -150,6 +150,7 @@ function chart(string $type, array $values, array $settings = [], string $colour
         .error { background: #fdecea; color: #8c1d18; padding: .75rem; border-radius: .25rem; margin-bottom: 1rem; font-size: .875rem; }
         .err { color: #8c1d18; font-size: .8125rem; }
         .empty { color: #666; }
+        .desc { color: #666; font-size: .8125rem; margin-top: .25rem; max-width: 34rem; }
         .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
         .card { border: 1px solid #e3e3e3; border-radius: .375rem; padding: .75rem 1rem; min-width: 10rem; }
         .card dt { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #666; }
@@ -302,6 +303,9 @@ function chart(string $type, array $values, array $settings = [], string $colour
                     <td>
                         <?= esc((string) $method['title']) ?><br>
                         <code><?= esc((string) $method['key']) ?></code>
+                        <?php if (($method['description'] ?? '') !== ''): ?>
+                            <div class="desc"><?= esc((string) $method['description']) ?></div>
+                        <?php endif; ?>
                     </td>
                     <td>
                         <?php

@@ -83,6 +83,7 @@ class TopUp implements AdminSectionInterface, HasSubMenu
             $lines[] = '';
             $lines[] = '<i>A payment method arrives with an extension. '
                 . 'Install one, then switch it on here.</i>';
+            $lines[] = '';
         }
 
         foreach ($report['methods'] as $method) {
@@ -101,6 +102,16 @@ class TopUp implements AdminSectionInterface, HasSubMenu
                 self::WINDOW
             );
 
+            // What the method says about itself, which is where a method
+            // that is switched on and still not taking money gets to
+            // explain why -- an admin should not have to go and read the
+            // extension's settings to find out.
+            if (($method['description'] ?? '') !== '') {
+                $lines[] = '<i>' . $this->escape((string) $method['description']) . '</i>';
+            }
+
+            $lines[] = '';
+
             if (!$method['registered']) {
                 continue;
             }
@@ -111,7 +122,6 @@ class TopUp implements AdminSectionInterface, HasSubMenu
             ));
         }
 
-        $lines[] = '';
         $lines[] = '<i>Off means customers are not offered it. '
             . 'Nothing already taken is affected.</i>';
 

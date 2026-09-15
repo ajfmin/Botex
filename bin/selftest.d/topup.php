@@ -15,6 +15,7 @@ use Botex\Bot\Admin\HasSubMenu;
 use Botex\Bot\Admin\Panel;
 use Botex\Bot\Admin\Sections;
 use Botex\Bot\TopUp\MethodState;
+use Botex\Bot\TopUp\PaymentMethodInterface;
 use Botex\Bot\TopUp\TopUpService;
 
 group('Top-up method state');
@@ -108,6 +109,42 @@ check('the ledger reference type is stable', static function () {
     return TopUpService::REFERENCE === 'topup'
         ? true
         : 'reference type is now ' . TopUpService::REFERENCE;
+});
+
+check('a payment method can explain its own condition', static function () {
+    // description() has to be an instance method, not a static one. A
+    // method that is switched on and still not taking money -- a gateway
+    // with test credentials, a card method with no card number set --
+    // says so on this line, and a static method cannot see a setting.
+    // Made static again and the panel would silently go back to printing
+    // a fixed sentence at an admin who is trying to find out what is
+    // wrong.
+    $description = new ReflectionMethod(PaymentMethodInterface::class, 'description');
+
+    if ($description->isStatic()) {
+        return 'PaymentMethodInterface::description() is static again';
+    }
+
+    // Read rather than reflected: composer autoloads `src/`, not
+    // `extensions/`, so a reflection pass here would find no classes and
+    // quietly pass whatever it was given.
+    foreach (glob(dirname(__DIR__, 2) . '/extensions/*/*/*.php') ?: [] as $file) {
+        $source = (string) file_get_contents($file);
+
+        if (!preg_match('/class\s+\w+[^{]*implements[^{]*PaymentMethodInterface/', $source)) {
+            continue;
+        }
+
+        if (preg_match('/static\s+function\s+description\s*\(/', $source)) {
+            return basename($file) . ' declares description() static';
+        }
+
+        if (!preg_match('/function\s+description\s*\(/', $source)) {
+            return basename($file) . ' does not implement description()';
+        }
+    }
+
+    return true;
 });
 
 group('Admin panel buttons');

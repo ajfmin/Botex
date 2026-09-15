@@ -2290,7 +2290,7 @@ removed, while the accounting it feeds stays put.
 | --- | --- |
 | `static key(): string` | stable, unique across every installed extension; **MUST** match `[A-Za-z0-9._-]+` |
 | `static title(): string` | what the customer sees on the button |
-| `static description(): string` | one line under the title on the admin's screen |
+| `description(): string` | one line under the title on the admin's screen |
 | `isConfigured(): bool` | whether it can take money *right now* |
 | `start(Update $update): void` | the customer picked this; do whatever paying means here |
 
@@ -2306,6 +2306,19 @@ history *and* silently switches the new name on.
 operator wants; this is what the method can deliver. A gateway with no
 API key is switched on and unusable. Core hides it from customers either
 way and shows an admin which of the two it is.
+
+**`description()` is where a method explains itself.** It is an instance
+method, not a static one, so it can report the method's actual condition
+and not only its purpose — "no card number set", "test credentials in
+use". It is printed under the title on **/admin → Top-ups → 💳 Payment
+methods** and on the web report. An admin who has switched a method on
+and is watching nothing happen reads that line to find out why, and the
+method is the only thing that knows; a method that returns something
+static there makes them go and read your settings file instead.
+
+Reserve it for a condition that is *not* already covered by
+`isConfigured()`: something the method can still limp along without, but
+which changes what the admin thinks they switched on.
 
 **A new method is off until an admin turns it on.** This is the opposite
 of `Extension\State`, where absent means enabled, and the difference is

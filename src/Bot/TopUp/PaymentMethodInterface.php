@@ -39,8 +39,16 @@ interface PaymentMethodInterface
     /** What the customer sees on the button. */
     public static function title(): string;
 
-    /** One line under the title on the admin's screen. */
-    public static function description(): string;
+    /**
+     * One line under the title on the admin's screen.
+     *
+     * An instance method rather than a static one, so it can report the
+     * method's actual condition and not just its purpose -- "no card
+     * number set", "test credentials". An admin who has switched a
+     * method on and is watching nothing happen is reading this line to
+     * find out why, and a method is the only thing that knows.
+     */
+    public function description(): string;
 
     /**
      * Whether this method can actually take money right now.
