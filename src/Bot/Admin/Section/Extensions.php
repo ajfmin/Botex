@@ -57,7 +57,7 @@ class Extensions implements AdminSectionInterface
         $lines[] = '';
         $lines[] = '<i>Manage with php bin/console ext:list</i>';
 
-        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines));
     }
 
     private function escape(string $value): string

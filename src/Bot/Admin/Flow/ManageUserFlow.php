@@ -45,8 +45,7 @@ class ManageUserFlow implements FlowInterface
 
         $this->bot->sendMessage($this->run($action, $telegramId))
             ->to($session->telegramId)
-            ->parseMode('HTML')
-            ->replyMarkup(Panel::backKeyboard());
+            ->parseMode('HTML');
     }
 
     private function run(string $action, int $telegramId): string

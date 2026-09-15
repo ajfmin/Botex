@@ -41,7 +41,6 @@ class AddQuestionFlow implements FlowInterface
         $this->questions->add($text);
 
         $this->bot->sendMessage('Question added.')
-            ->to($session->telegramId)
-            ->replyMarkup(Panel::backKeyboard());
+            ->to($session->telegramId);
     }
 }

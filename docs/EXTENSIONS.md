@@ -299,6 +299,7 @@ extension already installed. (`Registry` also guards with
 | `adminSections()` | `array<class-string<AdminSectionInterface>>` | `Bot\Admin\Sections` | panels inside `/admin` |
 | `runnables()` | `array<class-string<RunnableInterface>>` | `Bot\Action\Runnables` | named actions a Run button binds to |
 | `jobs()` | `array<class-string<JobInterface>>` | `Bot\Job\Jobs` | named work the job worker can run |
+| `paymentMethods()` | `array<class-string<PaymentMethodInterface>>` | `Bot\TopUp\PaymentMethods` | ways a customer can add funds (section 16.8) |
 | `install()` | `void` | `Manager::install()` | create tables; **MUST be idempotent** |
 | `uninstall()` | `void` | `Manager::remove()` | drop tables |
 
@@ -423,6 +424,7 @@ supply, so they are `set()` rather than autowired):
 | `Botex\Extension\State` | takes a file path string |
 | `Botex\Extension\Registry` | takes a path string |
 | `Botex\Extension\SettingsFactory` | takes a path string |
+| `Botex\Bot\TopUp\MethodState` | takes a path string |
 | `Botex\Telegram\Bot` | takes the bot token string |
 | `Botex\Support\Log\Logger` | built from config paths, levels and the notifier (section 26) |
 
@@ -435,10 +437,13 @@ Autowired on demand — inject any of these directly:
 | `Botex\Bot\Conversation\Store` | read or clear a session directly |
 | `Botex\Bot\Action\ActionBinder` | persist a `Run` intent; rarely needed — buttons bind themselves |
 | `Botex\Bot\Action\ActionRunner` | run an action without a button |
-| `Botex\Bot\Admin\Panel` | admin menu + back keyboard |
+| `Botex\Bot\Admin\Panel` | the admin keyboard, and show() |
 | `Botex\Service\UserService` | users: find, create, block, stats |
 | `Botex\Service\WalletService` | money |
 | `Botex\Service\JobService` | schedule jobs |
+| `Botex\Bot\TopUp\TopUpService` | settle a payment: credits and attributes it in one go |
+| `Botex\Bot\TopUp\PaymentMethods` | the payment-method allowlist |
+| `Botex\Bot\TopUp\Finance` | the financial report, as data |
 | `Botex\Repository\UserRepository` | lower-level user queries |
 | `Botex\Repository\JobRepository` | lower-level job queries |
 | your own services / repositories | plain classes, autowired the same way |
@@ -1385,21 +1390,43 @@ something Telegram refuses — a section that calls `editMessage()` there
 renders as silence. `show()` picks the right one from the update, so a
 section written against it works from both without knowing which it was.
 
-Always offer a way back: `Panel::HOME` (`'admin:home'`) as callback data,
-or `Panel::backKeyboard()` for a ready-made single-button keyboard.
+**One control, one place.** This is the rule that decides which kind of
+button anything in the panel gets, and it is not a style preference — the
+panel used to offer every section twice, once on the keyboard and again
+as an inline button in the message underneath, and an admin had to learn
+that the two did the same thing.
+
+| The control… | …is a | Because |
+| --- | --- | --- |
+| opens another screen — a section, one of its screens, home, back | **reply-keyboard label** | the keyboard survives a flow, a customer writing in, and scrolling away, which is what you want from the way *out* of a screen |
+| acts on what is already on screen — toggle, block, adjust, page, refresh | **inline button** | it belongs next to the thing it acts on, and editing the message in place keeps the conversation from growing |
+
+Consequences worth stating outright:
+
+- **Do not render a "Back" button.** `Panel::backKeyboard()` and
+  `Panel::menu()` were removed in 1.1.0 for exactly this reason. Leaving a
+  section is `🏠 Admin` on the keyboard, which is always there.
+- **Do not render your `menuItems()` as inline buttons too.** That is the
+  same duplication one level down.
+- A read-only screen with no management to offer renders **no keyboard at
+  all**, and that is correct.
+- A screen that is *not* a keyboard label — one entity out of a list, say
+  — may still carry an inline button back to the list it came from. That
+  is navigation the keyboard does not offer, so it is not a duplicate.
 
 Your section appears on the reply keyboard automatically, under its
 `title()` — there is nothing to register for it. A title is therefore also
-a label an admin can type, so keep it short and distinctive.
+a label an admin can type, so keep it short and distinctive. Entering a
+section whose screens are on the keyboard puts `title()` there too, as the
+first label, so the section's own front page is always one tap away.
 
 | `Botex\Bot\Admin\Panel` | |
 | --- | --- |
 | `Panel::HOME` | `'admin:home'` |
 | `Panel::SECTION` | `'admin:s:'` |
 | `static section(string $key): string` | builds `admin:s:<key>` |
-| `static backKeyboard(): array` | one Back button to home |
+| `homeText(): string` | the home screen's text; it has no buttons |
 | `static hideKeyboard(): array` | markup that removes the reply keyboard |
-| `menu(): array` | the home screen inline, two sections per row (injected instance) |
 | `menuKeyboard(?string $section = null, Update\|int\|null $audience = null): array` | the sections as a reply keyboard, or one section's own screens |
 | `useMenu(Update, ?string $section = null, bool $force = false): void` | puts the right keyboard on the admin's phone, if it is not already there |
 | `subMenu(string $key): array` | that section's `label => screen` pairs, or `[]` |
@@ -2244,6 +2271,111 @@ is a valid backstop.
 `InsufficientFunds` and `NotRefundable` are normal outcomes — catch and
 explain them to the user. The rest indicate a bug.
 
+### 16.8 Top-ups: selling a way to pay
+
+Core owns the *shape* of adding funds — the list a customer picks from,
+the on/off switch an admin flips, the ledger every method writes to, and
+the report read back off it. Core owns none of the *paying*. A card
+transfer reviewed by a human, a gateway redirect, a crypto address, a
+voucher code: each of those is an extension.
+
+That split is deliberate. Payment is the part of a bot most likely to be
+country-specific, to need credentials core should never hold, and to be
+replaced without notice — so it lives where it can be installed and
+removed, while the accounting it feeds stays put.
+
+**`Botex\Bot\TopUp\PaymentMethodInterface`**
+
+| Member | Contract |
+| --- | --- |
+| `static key(): string` | stable, unique across every installed extension; **MUST** match `[A-Za-z0-9._-]+` |
+| `static title(): string` | what the customer sees on the button |
+| `static description(): string` | one line under the title on the admin's screen |
+| `isConfigured(): bool` | whether it can take money *right now* |
+| `start(Update $update): void` | the customer picked this; do whatever paying means here |
+
+Return it from `paymentMethods()` and core does the rest: `/topup` lists
+it, the admin panel can switch it off, and the money it brings in is
+attributed to it.
+
+**`key()` is published the moment a customer uses it.** It is written to
+every `topups` row and to the state file, so renaming one orphans its
+history *and* silently switches the new name on.
+
+**`isConfigured()` is not the on/off switch.** The switch is what an
+operator wants; this is what the method can deliver. A gateway with no
+API key is switched on and unusable. Core hides it from customers either
+way and shows an admin which of the two it is.
+
+**A new method is off until an admin turns it on.** This is the opposite
+of `Extension\State`, where absent means enabled, and the difference is
+money: an extension appearing on disk and working is a convenience, a
+payment route appearing and immediately taking customers' money is not.
+
+#### Settling a payment
+
+When your extension is satisfied that somebody really paid, call
+`Botex\Bot\TopUp\TopUpService::credit()` — **not** `WalletService::credit()`:
+
+```php
+$topUp = $this->topups->credit(
+    userId: (int) $user->id,          // internal id, never a telegram id
+    amount: 345_000,                  // wallet minor units
+    method: CardMethod::key(),
+    idempotencyKey: "shop:{$orderId}:credit",
+    reference: (string) $orderId,     // your own id for this payment
+    reason: 'Card transfer',
+);
+```
+
+That writes the ledger entry **and** the row saying which method produced
+it, in one transaction. Doing the two separately is how a bot ends up
+with a report that disagrees with its own ledger.
+
+| `TopUpService` | |
+| --- | --- |
+| `credit(int $userId, int $amount, string $method, string $idempotencyKey, string $reference = '', string $reason = 'Top-up', array $meta = []): TopUp` | throws `InvalidArgumentException` for an unregistered method, and any `WalletException` the credit raises |
+| `TopUpService::REFERENCE` | `'topup'`; entries are referenced `topup:<method>#<reference>` |
+
+**The idempotency key is derived from what you are settling** — an order
+id, a receipt id, a gateway payment id — never generated per attempt.
+That is what makes a redelivered webhook safe: the wallet returns the
+original entry instead of moving the balance again, and `credit()`
+notices and does not write a second `topups` row for it either.
+
+If your extension already has a transaction open (settling its own row in
+the same breath), call this inside it — wallet operations nest with
+savepoints, so the whole thing commits or rolls back together.
+
+#### Reading the money back
+
+| `Botex\Bot\TopUp\PaymentMethods` | |
+| --- | --- |
+| `all(): array<string, class-string>` | every registered method |
+| `find(string $key)` / `has(string $key)` | allowlist lookup |
+| `make(string $key): ?PaymentMethodInterface` | build one |
+| `available(): array<string, PaymentMethodInterface>` | switched on **and** configured — what a customer may pick |
+
+| `Botex\Bot\TopUp\MethodState` | |
+| --- | --- |
+| `isEnabled(string $key): bool` | absent means **off** |
+| `isKnown(string $key): bool` | whether an admin ever decided |
+| `enable` / `disable` / `toggle` / `forget` / `all` | the switch |
+
+| `Botex\Bot\TopUp\Finance` | |
+| --- | --- |
+| `report(int $days = 30): array` | windows, per-method totals, a row per day, averages, held balance |
+
+`Finance` answers in arrays rather than text, because the same figures
+are read twice: into the admin panel's **Top-ups** section on a phone,
+and into `/finance.php` with charts. There is no all-time total anywhere
+in it — that is the one figure that would oblige an install to keep every
+payment it ever took.
+
+A method whose extension has been removed still appears in the report,
+marked as gone, with its money intact. Hiding it would make revenue
+vanish at exactly the moment an operator is trying to find it.
+
 ## 17. Users
 
 Two ids exist and they are not interchangeable:
@@ -2375,6 +2507,26 @@ the panel: pass counts and labels, not payloads.
 The panel is a diagnostic surface, not an admin UI. User-facing management
 belongs in an admin section (section 13), which is authenticated by telegram
 id rather than a shared URL token.
+
+### 19.1 The financial report
+
+`public/finance.php?token=<PANEL_TOKEN>&days=30` — top-ups by day and by
+method, with charts. Linked from the panel and gated by the same token,
+under the same rules: read-only, fails closed, aggregates only.
+
+The one per-row identifier it prints is the **internal** user id, which
+means nothing outside this database. Telegram ids, names and per-customer
+balances stay off it, exactly as they do on `panel.php`.
+
+Windows are 7, 30, 90 and 365 days, chosen by a link — there is no
+all-time view, for the reason in section 16.8. Charts are inline SVG
+rendered server-side by `goat1000/svggraph`, so the page needs no CDN, no
+asset build and no outbound network: an operator on a locked-down host
+still sees the shape of their month.
+
+Your extension needs to do nothing to appear here. Anything settled
+through `TopUpService::credit()` is counted, attributed to your method,
+and keeps being counted after your extension is removed.
 
 ## 20. Console reference
 
@@ -3158,6 +3310,13 @@ $this->wallet->credit($userId, $amount, $reason, $reference, $key);
 $this->wallet->refund($transactionId, $amount);
 $this->wallet->balanceMoney($userId)->format();
 $this->wallet->atomic(fn () => ...);
+
+// Top-ups — settle a payment through this, not the wallet directly, so
+// the money is attributed to your method on the financial report
+$this->topups->credit(
+    userId: $userId, amount: $minor, method: MyMethod::key(),
+    idempotencyKey: "order:{$id}:credit", reference: (string) $id,
+);
 
 // Run actions — the payload on the server, a token (or label) on the button
 Keyboard::inline()->row(

@@ -18,6 +18,7 @@ class Sections
         Section\Stats::class,
         Section\Users::class,
         Section\Wallet::class,
+        Section\TopUp::class,
         Section\Extensions::class,
         Section\Updates::class,
     ];

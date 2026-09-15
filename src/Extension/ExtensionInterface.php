@@ -66,6 +66,18 @@ interface ExtensionInterface
     public static function jobs(): array;
 
     /**
+     * Ways a customer can put money in their wallet.
+     *
+     * Core owns the list, the on/off switch, the ledger and the report;
+     * an extension owns the paying. A method resolves through the
+     * PaymentMethods allowlist, so one belonging to a disabled extension
+     * simply stops being offered while its history stays readable.
+     *
+     * @return array<class-string<\Botex\Bot\TopUp\PaymentMethodInterface>>
+     */
+    public static function paymentMethods(): array;
+
+    /**
      * Called once when the extension is installed or enabled.
      * Create tables here. Must be safe to run twice.
      */

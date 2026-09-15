@@ -49,13 +49,14 @@ class Users implements AdminSectionInterface
         $lines[] = '';
         $lines[] = '<i>Showing the 10 newest.</i>';
 
+        // Management only. Getting back out is the keyboard's job, which
+        // is why there is no Back button here (see Panel's docblock).
         $keyboard = Keyboard::inline()
             ->row(
                 InlineButton::callback('Check', UserAction::start('check')),
                 InlineButton::callback('Block', UserAction::start('block')),
                 InlineButton::callback('Unblock', UserAction::start('unblock'))
             )
-            ->row(InlineButton::callback('Back', Panel::HOME))
             ->build();
 
         $this->panel->show($update, implode(PHP_EOL, $lines), $keyboard);

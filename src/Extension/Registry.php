@@ -206,6 +206,21 @@ class Registry
         return $this->collectBySlug('jobs');
     }
 
+    /**
+     * Payment methods contributed by every enabled extension, keyed by
+     * slug.
+     *
+     * Grouped like runnables and jobs, though a `topups` row names only
+     * the method: the slug is what makes a duplicate key blamable on an
+     * extension when two of them claim the same one.
+     *
+     * @return array<string, array<class-string<\Botex\Bot\TopUp\PaymentMethodInterface>>>
+     */
+    public function paymentMethods(): array
+    {
+        return $this->collectBySlug('paymentMethods');
+    }
+
     /** @return array<class-string> */
     private function collect(string $method): array
     {

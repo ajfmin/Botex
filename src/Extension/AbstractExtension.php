@@ -39,6 +39,11 @@ abstract class AbstractExtension implements ExtensionInterface
         return [];
     }
 
+    public static function paymentMethods(): array
+    {
+        return [];
+    }
+
     public static function install(): void
     {
         //

@@ -99,9 +99,21 @@ try {
     $errors['updates'] = $e->getMessage();
 }
 
-function e(string $value): string
-{
-    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+/**
+ * Escapes one value for this page.
+ *
+ * Guarded, and no longer called `e()`. That is the same name
+ * illuminate/support puts in the global namespace, and which of the two
+ * won depended on whether this file was compiled before or after the
+ * autoloader ran -- fine for a direct request, a fatal the moment
+ * anything includes the page after booting. Escaping is not a thing to
+ * leave depending on load order.
+ */
+if (!function_exists('esc')) {
+    function esc(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+    }
 }
 
 ?>
@@ -138,20 +150,23 @@ function e(string $value): string
         .job-failed { background: #fdecea; color: #8c1d18; }
         .job-paused { background: #eee; color: #555; }
         .err { color: #8c1d18; font-size: .8125rem; }
+        .nav { font-size: .875rem; margin: -.5rem 0 1.5rem; }
     </style>
 </head>
 <body>
     <h1>Overview</h1>
 
+    <p class="nav"><a href="finance.php?token=<?= esc($provided) ?>">Financial report &rarr;</a></p>
+
     <?php if ($wallet !== null): ?>
         <div class="cards">
             <dl class="card">
                 <dt>Wallets opened</dt>
-                <dd><?= e((string) $wallet['wallets']) ?></dd>
+                <dd><?= esc((string) $wallet['wallets']) ?></dd>
             </dl>
             <dl class="card">
                 <dt>Total held</dt>
-                <dd><?= e($wallet['formatted']) ?></dd>
+                <dd><?= esc($wallet['formatted']) ?></dd>
             </dl>
         </div>
     <?php endif; ?>
@@ -160,15 +175,15 @@ function e(string $value): string
         <div class="cards">
             <dl class="card">
                 <dt>Stored actions</dt>
-                <dd><?= e((string) $actions['stored']) ?></dd>
+                <dd><?= esc((string) $actions['stored']) ?></dd>
             </dl>
             <dl class="card">
                 <dt>Still pressable</dt>
-                <dd><?= e((string) $actions['live']) ?></dd>
+                <dd><?= esc((string) $actions['live']) ?></dd>
             </dl>
             <dl class="card">
                 <dt>Registered actions</dt>
-                <dd><?= e((string) count($runnables)) ?></dd>
+                <dd><?= esc((string) count($runnables)) ?></dd>
             </dl>
         </div>
     <?php endif; ?>
@@ -178,20 +193,20 @@ function e(string $value): string
             <dl class="card">
                 <dt>Worker</dt>
                 <dd class="worker <?= str_starts_with($workerState, 'running') ? 'up' : 'down' ?>">
-                    <?= e($workerState) ?>
+                    <?= esc($workerState) ?>
                 </dd>
             </dl>
             <dl class="card">
                 <dt>Jobs scheduled</dt>
-                <dd><?= e((string) $jobStats['pending']) ?></dd>
+                <dd><?= esc((string) $jobStats['pending']) ?></dd>
             </dl>
             <dl class="card">
                 <dt>Due now</dt>
-                <dd><?= e((string) $jobStats['due']) ?></dd>
+                <dd><?= esc((string) $jobStats['due']) ?></dd>
             </dl>
             <dl class="card">
                 <dt>Failed</dt>
-                <dd><?= e((string) $jobStats['failed']) ?></dd>
+                <dd><?= esc((string) $jobStats['failed']) ?></dd>
             </dl>
         </div>
     <?php endif; ?>
@@ -216,7 +231,7 @@ function e(string $value): string
                 </p>
             <?php elseif ($updates['conflicts'] !== []): ?>
                 <p class="error">
-                    <?= e((string) count($updates['conflicts'])) ?> core file(s) edited
+                    <?= esc((string) count($updates['conflicts'])) ?> core file(s) edited
                     locally. A core update will stop rather than overwrite them &mdash;
                     see <code>php bin/console core:diff</code>.
                 </p>
@@ -242,20 +257,20 @@ function e(string $value): string
                         <?php if ($updates['core'] !== null): ?>
                             <tr>
                                 <td><strong>Botex core</strong></td>
-                                <td><?= e(Botex\Botex::VERSION) ?></td>
-                                <td><?= e($updates['core']->version) ?></td>
+                                <td><?= esc(Botex\Botex::VERSION) ?></td>
+                                <td><?= esc($updates['core']->version) ?></td>
                                 <td><code>php bin/console core:update</code></td>
                             </tr>
                         <?php endif; ?>
                         <?php foreach ($updates['extensions'] as $row): ?>
                             <tr>
                                 <td>
-                                    <?= e($row['name']) ?>
-                                    <div class="desc"><?= e($row['slug']) ?></div>
+                                    <?= esc($row['name']) ?>
+                                    <div class="desc"><?= esc($row['slug']) ?></div>
                                 </td>
-                                <td><?= e($row['installed']) ?></td>
-                                <td><?= e($row['available']) ?></td>
-                                <td><code>php bin/console ext:update <?= e($row['slug']) ?></code></td>
+                                <td><?= esc($row['installed']) ?></td>
+                                <td><?= esc($row['available']) ?></td>
+                                <td><code>php bin/console ext:update <?= esc($row['slug']) ?></code></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -267,7 +282,7 @@ function e(string $value): string
     <h1>Extensions</h1>
 
     <?php foreach ($errors as $slug => $message): ?>
-        <p class="error"><strong><?= e((string) $slug) ?></strong>: <?= e($message) ?></p>
+        <p class="error"><strong><?= esc((string) $slug) ?></strong>: <?= esc($message) ?></p>
     <?php endforeach; ?>
 
     <?php if (!$extensions): ?>
@@ -287,14 +302,14 @@ function e(string $value): string
                 <?php foreach ($extensions as $manifest): ?>
                     <?php $on = $registry->isEnabled($manifest->slug); ?>
                     <tr>
-                        <td><code><?= e($manifest->slug) ?></code></td>
+                        <td><code><?= esc($manifest->slug) ?></code></td>
                         <td>
-                            <?= e($manifest->name) ?>
+                            <?= esc($manifest->name) ?>
                             <?php if ($manifest->description !== ''): ?>
-                                <div class="desc"><?= e($manifest->description) ?></div>
+                                <div class="desc"><?= esc($manifest->description) ?></div>
                             <?php endif; ?>
                         </td>
-                        <td><?= e($manifest->version) ?></td>
+                        <td><?= esc($manifest->version) ?></td>
                         <td>
                             <span class="status <?= $on ? 'enabled' : 'disabled' ?>">
                                 <?= $on ? 'enabled' : 'disabled' ?>
@@ -334,26 +349,26 @@ function e(string $value): string
                     <?php foreach ($jobRows as $row): ?>
                         <tr>
                             <td>
-                                <code><?= e((string) $row->job) ?></code>
+                                <code><?= esc((string) $row->job) ?></code>
                                 <div class="desc">
-                                    <?= e((string) $row->extension) ?>
-                                    &middot; #<?= e((string) (int) $row->id) ?>
+                                    <?= esc((string) $row->extension) ?>
+                                    &middot; #<?= esc((string) (int) $row->id) ?>
                                 </div>
                             </td>
                             <td>
-                                <span class="status job-<?= e($row->status()->value) ?>">
-                                    <?= e($row->status()->label()) ?>
+                                <span class="status job-<?= esc($row->status()->value) ?>">
+                                    <?= esc($row->status()->label()) ?>
                                 </span>
                             </td>
-                            <td><?= e($row->describeSchedule()) ?></td>
-                            <td><?= e($row->describeNextRun()) ?></td>
+                            <td><?= esc($row->describeSchedule()) ?></td>
+                            <td><?= esc($row->describeNextRun()) ?></td>
                             <td>
-                                <?= e((string) (int) $row->runs) ?>
+                                <?= esc((string) (int) $row->runs) ?>
                                 <?php if ((int) $row->failures > 0): ?>
-                                    <div class="err"><?= e((string) (int) $row->failures) ?> failed</div>
+                                    <div class="err"><?= esc((string) (int) $row->failures) ?> failed</div>
                                 <?php endif; ?>
                                 <?php if ($row->last_error): ?>
-                                    <div class="err"><?= e((string) $row->last_error) ?></div>
+                                    <div class="err"><?= esc((string) $row->last_error) ?></div>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -377,8 +392,8 @@ function e(string $value): string
                 <?php foreach ($runnables as $key => $class): ?>
                     <?php [$owner, $name] = explode(':', (string) $key, 2); ?>
                     <tr>
-                        <td><code><?= e($name) ?></code></td>
-                        <td><?= $owner === 'command' ? 'command' : e($owner) ?></td>
+                        <td><code><?= esc($name) ?></code></td>
+                        <td><?= $owner === 'command' ? 'command' : esc($owner) ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>

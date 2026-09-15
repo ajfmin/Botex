@@ -29,23 +29,24 @@ namespace Botex\Bot\Command;
 class Discovery
 {
     /**
-     * Files in this directory that are core machinery rather than a
-     * command an operator could write, or a command core registers itself.
+     * Files in this directory that are machinery rather than a command an
+     * operator could have written.
      *
-     * Kept as base names rather than class names so the check costs
-     * nothing and needs no autoloading to decide.
+     * Core's *commands* are deliberately absent from this list: they are
+     * read from [[Commands]] instead, which is the one place that decides
+     * which of them are registered. Keeping a second copy here meant
+     * adding a core command in one place and having it discovered as a
+     * custom one in the other -- registered twice, and shadowing itself.
      *
      * @var array<string>
      */
-    private const SHIPPED = [
-        'Admin',
-        'Cancel',
+    private const MACHINERY = [
         'CommandInterface',
         'Commands',
         'Discovery',
-        'Start',
+        // A real command class that is deliberately not typeable, which is
+        // exactly why it must never be discovered as one.
         'Unknown',
-        'Wallet',
     ];
 
     /** @var array<class-string<CommandInterface>>|null */
@@ -107,6 +108,26 @@ class Discovery
     }
 
     /**
+     * Base names this directory holds that are not custom commands.
+     *
+     * Core's registered commands are derived from `Commands` rather than
+     * listed again, so adding one there is all it takes -- there is no
+     * second list to remember, and the two cannot disagree.
+     *
+     * @return array<string>
+     */
+    private static function shipped(): array
+    {
+        $shipped = self::MACHINERY;
+
+        foreach (Commands::core() as $class) {
+            $shipped[] = substr((string) strrchr($class, '\\'), 1);
+        }
+
+        return $shipped;
+    }
+
+    /**
      * Base names worth asking the autoloader about.
      *
      * @return array<string>
@@ -128,7 +149,7 @@ class Discovery
 
             $name = substr($entry, 0, -4);
 
-            if (in_array($name, self::SHIPPED, true)) {
+            if (in_array($name, self::shipped(), true)) {
                 continue;
             }
 

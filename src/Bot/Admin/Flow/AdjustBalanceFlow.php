@@ -54,8 +54,7 @@ class AdjustBalanceFlow implements FlowInterface
     {
         $this->bot->sendMessage($this->run($session))
             ->to($session->telegramId)
-            ->parseMode('HTML')
-            ->replyMarkup(Panel::backKeyboard());
+            ->parseMode('HTML');
     }
 
     private function run(Session $session): string

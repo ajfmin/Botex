@@ -56,9 +56,11 @@ class OpenSection implements CallbackInterface, MatchesCallback
         $section = $this->sections->find($key);
 
         if ($section === null) {
+            // No Back button: the keyboard is the way out of a screen,
+            // and this one is still showing whatever it was showing.
             $this->bot->sendMessage('That panel is no longer available.')
                 ->to($update->chatId())
-                ->replyMarkup(Panel::backKeyboard());
+                ->execute();
 
             return;
         }

@@ -104,6 +104,40 @@ class Migrator
             $created[] = 'wallet_transactions';
         }
 
+        // What the ledger deliberately does not know: which payment
+        // method brought each credit in. Written in the same transaction
+        // as the credit it describes, so the report and the balance
+        // cannot disagree. See Botex\Bot\TopUp\TopUpService.
+        if (Schema::createIfMissing('topups', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            // A registered payment method key, never a class name: the
+            // report resolves it through the PaymentMethods allowlist and
+            // falls back to showing the bare key for a method whose
+            // extension has since been removed.
+            $table->string('method', 191);
+            // Wallet minor units, positive. Signed makes no sense here:
+            // a refund is a ledger entry, not a negative top-up.
+            $table->unsignedBigInteger('amount');
+            // The ledger entry this credited. Nullable only so a row
+            // survives a ledger pruned by hand; normally always set.
+            $table->unsignedBigInteger('transaction_id')->nullable();
+            // The extension's own id for the payment -- a receipt id, an
+            // order number, a gateway reference.
+            $table->string('reference', 191)->nullable();
+            $table->text('meta')->nullable();
+            $table->timestamps();
+
+            // The report reads a window and groups by method; these are
+            // the two shapes every figure on it comes from.
+            $table->index('created_at');
+            $table->index(['method', 'created_at']);
+            $table->index('user_id');
+            $table->index('transaction_id');
+        })) {
+            $created[] = 'topups';
+        }
+
         if (Schema::createIfMissing('jobs', function ($table) {
             $table->id();
             // Optional dedupe name. Unique where present, so scheduling a

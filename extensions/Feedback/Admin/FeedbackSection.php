@@ -107,9 +107,9 @@ class FeedbackSection implements AdminSectionInterface
             );
         }
 
-        return $keyboard
-            ->row(InlineButton::callback('Back', Panel::HOME))
-            ->build();
+        // Management only -- add, toggle, delete. Getting back out is the
+        // keyboard's job, so there is no Back button here.
+        return $keyboard->build();
     }
 
     private function truncate(string $value, int $length = 20): string

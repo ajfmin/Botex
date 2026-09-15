@@ -46,8 +46,18 @@ crontabs cannot run the same job twice.
 **A wallet.** Balances in minor units, credits, debits, refunds, and a
 ledger.
 
+**Top-ups.** `/topup` lists the ways a customer can add funds, an admin
+switches each on or off, and every payment is attributed to the method
+that took it. Core owns the list, the switch, the ledger and the report;
+the paying itself is an extension, because payment is the part most
+likely to be country-specific and to need credentials core should never
+hold. There is a financial report in the panel and a charted one on the
+web.
+
 **An admin panel.** Inside Telegram, plus a token-gated read-only web page.
-Both are deliberately read-only about anything that writes code.
+Both are deliberately read-only about anything that writes code. Every
+control appears exactly once: navigation is on the reply keyboard,
+management is an inline button next to the thing it acts on.
 
 **An archive.** Publish extensions and core releases, browse them on a
 website, install them by name.

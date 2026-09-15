@@ -158,7 +158,7 @@ class Updates implements AdminSectionInterface
     /** @param array<string> $lines */
     private function send(array $lines, Update $update): void
     {
-        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines));
     }
 
     private function trim(string $value, int $length): string

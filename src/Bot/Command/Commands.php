@@ -26,8 +26,24 @@ class Commands
         Start::class,
         Admin::class,
         Wallet::class,
+        TopUp::class,
         Cancel::class,
     ];
+
+    /**
+     * The commands core registers, for anything that needs to tell them
+     * from an operator's own.
+     *
+     * Public and static so [[Discovery]] can read it instead of keeping a
+     * second copy: one list, so adding a core command cannot end up
+     * registering it twice.
+     *
+     * @return array<class-string<CommandInterface>>
+     */
+    public static function core(): array
+    {
+        return self::CORE;
+    }
 
     /** @var array<class-string<CommandInterface>>|null */
     private ?array $list = null;

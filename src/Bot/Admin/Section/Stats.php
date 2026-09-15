@@ -49,6 +49,6 @@ class Stats implements AdminSectionInterface
         $lines[] = 'Opened: ' . $wallet['wallets'];
         $lines[] = 'Held balance: ' . htmlspecialchars($wallet['formatted'], ENT_QUOTES, 'UTF-8');
 
-        $this->panel->show($update, implode(PHP_EOL, $lines), Panel::backKeyboard());
+        $this->panel->show($update, implode(PHP_EOL, $lines));
     }
 }

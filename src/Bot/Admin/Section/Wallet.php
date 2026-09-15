@@ -62,7 +62,6 @@ class Wallet implements AdminSectionInterface
                     WalletAction::start(WalletAction::DEBIT)
                 )
             )
-            ->row(InlineButton::callback('Back', Panel::HOME))
             ->build();
 
         $this->panel->show($update, implode(PHP_EOL, $lines), $keyboard);

@@ -39,6 +39,6 @@ class Home implements CallbackInterface
         // Leaving a section takes its keyboard with it.
         $this->panel->useMenu($update);
 
-        $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
+        $this->panel->show($update, $this->panel->homeText());
     }
 }

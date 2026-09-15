@@ -31,11 +31,13 @@ class Admin implements CommandInterface
     }
 
     /**
-     * Both keyboards, in two messages, because Telegram allows one
-     * reply_markup per message and these are different kinds of markup.
+     * The keyboard, then the screen.
      *
-     * The keyboard goes first and quietly; the panel follows and is the
-     * message the admin actually reads and navigates in place.
+     * Two messages because Telegram allows one reply_markup each, and
+     * the keyboard is the navigation while the screen is what gets read.
+     * The screen carries no buttons of its own: the sections are on the
+     * keyboard, and listing them again underneath is the duplication
+     * this panel used to ship with.
      *
      * Forced, unlike every other caller: typing /admin is what an admin
      * does after closing the keyboard, and the whole point of it is to
@@ -45,6 +47,6 @@ class Admin implements CommandInterface
     {
         $this->panel->useMenu($update, null, force: true);
 
-        $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
+        $this->panel->show($update, $this->panel->homeText());
     }
 }

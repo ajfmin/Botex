@@ -53,7 +53,7 @@ class OpenSection implements RunnableInterface
         // panel itself rather than any section.
         if ($key === '') {
             $this->panel->useMenu($update);
-            $this->panel->show($update, '<b>Admin panel</b>', $this->panel->menu());
+            $this->panel->show($update, $this->panel->homeText());
 
             return;
         }
@@ -62,9 +62,13 @@ class OpenSection implements RunnableInterface
 
         if ($section === null) {
             // An extension was removed while its label was still on
-            // somebody's keyboard.
+            // somebody's keyboard. useMenu() above has already rebuilt the
+            // keyboard without it, so saying so is all that is left.
             $this->panel->useMenu($update);
-            $this->panel->show($update, 'That panel is no longer available.', $this->panel->menu());
+            $this->panel->show(
+                $update,
+                'That panel is no longer available.' . PHP_EOL . PHP_EOL . $this->panel->homeText()
+            );
 
             return;
         }

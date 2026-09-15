@@ -13,25 +13,40 @@ use Botex\Telegram\Builders\Keyboard\MenuButton;
 use Botex\Telegram\Update;
 
 /**
- * Shared chrome for admin screens: the home menu, the back button every
- * section shows, and the rule for how a screen is put on the phone.
+ * Shared chrome for admin screens: the keyboard, and the rule for how a
+ * screen is put on the phone.
  *
- * The panel is navigable two ways, because the two are good at different
- * things. **Inline** buttons sit in the message and edit it in place, so
- * moving through the panel leaves one message behind instead of a wall of
- * them. The **reply keyboard** sits under the text box and survives
- * everything: after a flow, after a customer's message, after scrolling
- * away, the sections are still one tap down rather than a /admin away.
+ * **One control, one place.** The panel used to offer every section
+ * twice -- once on the reply keyboard and again as an inline button in
+ * the message underneath it -- so an admin opening /admin was handed the
+ * same list of names in two shapes and had to learn that they did the
+ * same thing. The two kinds of button are not interchangeable, and which
+ * one a control gets is decided by what it does:
  *
- * Both open the same sections through the same admin gate. The difference
- * is only how the section is reached, which is why show() exists: an
- * inline press has a message of ours to edit, a keyboard tap does not.
+ * - **Navigation goes on the keyboard.** Anything whose job is to open
+ *   another screen -- a section, one of a section's own screens, home,
+ *   close -- is a reply-keyboard label. The keyboard sits under the text
+ *   box and survives everything: a flow, a customer writing in, scrolling
+ *   away. That is exactly what you want from the way out of a screen,
+ *   and it is why there is no inline "Back" anywhere in core any more.
+ * - **Management stays inline.** Anything that acts on what is already
+ *   on screen -- toggle this method, block this user, adjust this
+ *   balance, page this list -- is an inline button, next to the thing it
+ *   acts on, editing the message in place rather than pushing the
+ *   conversation down.
+ *
+ * A screen may of course have no inline buttons at all; a read-only one
+ * usually does not.
+ *
+ * show() is what keeps both routes working: an inline press has a
+ * message of ours to edit, a keyboard tap arrives as the admin's own
+ * message and Telegram refuses to edit that.
  *
  * The keyboard follows the admin into a section that asked for it (see
- * [[HasSubMenu]]), so the screens inside it are one tap away rather than
- * a scroll back up to an inline button. Exactly one panel keyboard is
- * ever bound for an admin, which is what lets useMenu() tell whether the
- * keyboard already on their phone is the right one.
+ * [[HasSubMenu]]), so the screens inside it are one tap away. Exactly one
+ * panel keyboard is ever bound for an admin, which is what lets
+ * useMenu() tell whether the keyboard already on their phone is the
+ * right one.
  */
 class Panel
 {
@@ -57,26 +72,18 @@ class Panel
         return self::SECTION . $key;
     }
 
-    /** Two sections per row, in registration order. */
-    public function menu(): array
+    /**
+     * The home screen's text.
+     *
+     * Text and nothing else, because the sections are on the keyboard
+     * and this used to render them a second time as inline buttons --
+     * the same list, in the same message, twice. See the note on
+     * navigation versus management in this class's docblock.
+     */
+    public function homeText(): string
     {
-        $keyboard = Keyboard::inline();
-        $row = [];
-
-        foreach ($this->sections->all() as $key => $class) {
-            $row[] = InlineButton::callback($class::title(), self::section($key));
-
-            if (count($row) === 2) {
-                $keyboard->row(...$row);
-                $row = [];
-            }
-        }
-
-        if ($row !== []) {
-            $keyboard->row(...$row);
-        }
-
-        return $keyboard->build();
+        return '<b>Admin panel</b>' . PHP_EOL . PHP_EOL
+            . 'Sections are on the keyboard below.';
     }
 
     /**
@@ -153,6 +160,11 @@ class Panel
      * Judged by the first label, which menuKeyboard() guarantees belongs
      * to one keyboard only: it drops every other panel label before
      * binding its own.
+     *
+     * A section keyboard leads with the section's own title, so that is
+     * what identifies it -- and because a title is also a label on the
+     * *sections* keyboard, the two are told apart by what the caller
+     * asked for rather than by the label alone.
      */
     public function menuIsShowing(Update $update, ?string $section = null): bool
     {
@@ -164,11 +176,33 @@ class Panel
 
         $items = $this->screens($section);
 
-        $label = $items === null
-            ? (array_key_first($this->sectionLabels()) ?? self::HOME_LABEL)
-            : (string) array_key_first($items);
+        if ($items !== null && $section !== null) {
+            // Inside a section, the giveaway is one of its own screens.
+            // The title alone will not do: it is a label on the sections
+            // keyboard too, so it cannot say which of the two is up.
+            return $this->actions->findByLabel(
+                (int) $telegramId,
+                (string) array_key_first($items)
+            ) !== null;
+        }
 
-        return $this->actions->findByLabel((int) $telegramId, $label) !== null;
+        // The sections keyboard is the one with no section's screens on
+        // it. Asking that way rather than picking a title keeps the
+        // answer right however the sections are ordered, and whichever
+        // of them the admin happens to be standing in.
+        if ($this->actions->findByLabel((int) $telegramId, self::HOME_LABEL) === null) {
+            return false;
+        }
+
+        foreach ($this->sections->all() as $key => $_) {
+            foreach ($this->subMenu($key) as $label => $__) {
+                if ($this->actions->findByLabel((int) $telegramId, (string) $label) !== null) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -271,6 +305,22 @@ class Panel
         $keyboard = Keyboard::menu()->resize();
         $row = [];
 
+        // The section's own front page, first and on a row of its own.
+        // Without it a section's screens would be reachable from the
+        // keyboard but the screen they hang off would not, and the only
+        // way back to it would be an inline button -- which is the one
+        // shape navigation is not allowed to take here. It is also what
+        // menuIsShowing() reads, so it has to stay first.
+        $title = $this->sections->find($section);
+
+        if ($title !== null) {
+            $keyboard->row($this->label(
+                $title::title(),
+                Run::core(OpenSection::name(), ['key' => $section]),
+                $audience
+            ));
+        }
+
         foreach ($items as $label => $screen) {
             $row[] = $this->label(
                 $label,
@@ -350,13 +400,6 @@ class Panel
         }
 
         return $labels;
-    }
-
-    public static function backKeyboard(): array
-    {
-        return Keyboard::inline()
-            ->row(InlineButton::callback('Back', self::HOME))
-            ->build();
     }
 
     /**

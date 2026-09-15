@@ -9,6 +9,7 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use Botex\Bot\CurrentUpdate;
 use Botex\Bot\Feeder;
+use Botex\Bot\TopUp\MethodState;
 use Botex\Compat;
 use Botex\Extension\Registry;
 use Botex\Extension\SettingsFactory;
@@ -20,6 +21,16 @@ use Botex\Support\Log\Logger;
 use Botex\Support\Log\LogNotifier;
 use Botex\Telegram\Bot;
 use Illuminate\Database\Capsule\Manager as Capsule;
+
+// Booting twice in one process returns the first container rather than
+// building a second. One page including another -- the panel linking the
+// financial report, a script pulling in an entry point -- would otherwise
+// end up with two of everything: two Telegram clients, two loggers, two
+// Eloquent boots, and a second Registry re-registering the extension
+// autoloader. Everything below this line is meant to happen once.
+if (isset($GLOBALS['__botex_app']) && $GLOBALS['__botex_app'] instanceof Feeder) {
+    return $GLOBALS['__botex_app'];
+}
 
 // Registered before anything can autoload an extension: Botex used to ship
 // its core under App\, and an extension written against that namespace has
@@ -83,6 +94,14 @@ $feeder->set(
     new SettingsFactory($registry, $config['paths']['settings'])
 );
 
+// Which payment methods are switched on. A file for the same reason the
+// extension state is one: an operator has to be able to turn a payment
+// route off from the console on a bot whose database is the problem.
+$feeder->set(
+    MethodState::class,
+    new MethodState($config['paths']['storage'] . '/topup-methods.json')
+);
+
 // Takes a token string, so it cannot be autowired. Registered here rather
 // than per entry point because a job sending a message has no update to
 // build one from, and the worker runs with no request at all.
@@ -115,5 +134,9 @@ $logger = new Logger(
 
 $feeder->set(Logger::class, $logger);
 Log::use($logger);
+
+// What the guard at the top reads. Set last, so a boot that threw part
+// way through is not remembered as a finished one.
+$GLOBALS['__botex_app'] = $feeder;
 
 return $feeder;

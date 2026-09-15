@@ -24,6 +24,7 @@ class Runnables
     private const CORE = [
         \Botex\Bot\Admin\Action\OpenSection::class,
         \Botex\Bot\Admin\Action\CloseMenu::class,
+        \Botex\Bot\TopUp\Action\Start::class,
     ];
 
     /** @var array<string, class-string<RunnableInterface>>|null */
