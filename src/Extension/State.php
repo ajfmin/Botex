@@ -54,18 +54,33 @@ class State
         return is_array($data) ? $data : [];
     }
 
+    /**
+     * Saves the state, or throws saying why not.
+     *
+     * Checked rather than fire-and-forget: an unwritable `storage/` --
+     * usually one owned by whoever ran the installer, on a host where
+     * the web server is somebody else -- used to leave every caller
+     * believing an extension had been enabled or disabled when nothing
+     * had been written at all. A decision nobody can save is not a
+     * decision, and saying so beats being contradicted by the next
+     * request.
+     */
     private function write(): void
     {
         $dir = dirname($this->file);
 
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Extension state could not be saved: {$dir} could not be created.");
         }
 
-        file_put_contents(
-            $this->file,
-            json_encode($this->state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
-            LOCK_EX
-        );
+        $json = json_encode($this->state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $written = $json === false ? false : @file_put_contents($this->file, $json, LOCK_EX);
+
+        if ($written === false || $written !== strlen((string) $json)) {
+            throw new \RuntimeException(
+                "Extension state could not be saved to {$this->file}: "
+                    . (error_get_last()['message'] ?? 'unknown error')
+            );
+        }
     }
 }

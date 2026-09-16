@@ -92,9 +92,32 @@ class ToggleMethod implements CallbackInterface, MatchesCallback
             return;
         }
 
-        $enabled = $this->state->toggle($key);
         $method = $this->methods->make($key);
         $title = $method === null ? $key : $method::title();
+
+        // The switch has to be *saved*, not just decided. A write that
+        // fails here used to be invisible: the object updated itself in
+        // memory, this handler redrew the screen from that same object
+        // showing the new state, and the admin was told it had worked --
+        // while the file, which is the only copy the next request reads,
+        // had not changed. Nothing is reported until it is on disk.
+        try {
+            $enabled = $this->state->toggle($key);
+        } catch (\Throwable $e) {
+            $this->log->exception($e, 'Payment method switch could not be saved', context: ['method' => $key]);
+
+            if ($callbackId !== null) {
+                $this->bot->answerCallback(
+                    $callbackId,
+                    'Could not save the switch, so ' . $title . ' is unchanged. '
+                        . 'The bot cannot write to storage/ -- check its permissions, '
+                        . 'then run php bin/console doctor.',
+                    true
+                );
+            }
+
+            return;
+        }
 
         // Re-render rather than send: the admin is looking at the list
         // they just changed, and it should show the change.

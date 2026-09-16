@@ -77,7 +77,15 @@ php bin/console migrate
 php bin/console doctor     # checks the environment and says what is missing
 ```
 
-Point Telegram's webhook at `public/index.php`, and run the worker if you
+`storage/` must be writable **by the user the webhook runs as**, not only
+by the one that ran the commands above. Switches, settings and extension
+state live there; `doctor` will tell you if the bot cannot write to it.
+
+```bash
+chown -R www-data:www-data storage/    # whatever your web server runs as
+```
+
+Point Telegram's webhook at `public/webhook.php`, and run the worker if you
 use jobs:
 
 ```bash

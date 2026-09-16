@@ -889,6 +889,19 @@ try {
                 }
             }
 
+            // The payment switches. Their own check rather than the
+            // storage/ one above, because the file is usually created by
+            // whoever runs the console and then written by whoever runs
+            // the webhook -- a directory that is writable to one of them
+            // says nothing about a file owned by the other.
+            $switches = $feeder->get(\Botex\Bot\TopUp\MethodState::class);
+
+            if (!$switches->isWritable()) {
+                echo '  ! payment method switches are not writable: ' . $switches->path() . PHP_EOL;
+                echo '    Turning a payment method on or off will fail.' . PHP_EOL;
+                $problems++;
+            }
+
             // The update baseline.
             $inventory = $feeder->make(Inventory::class);
 

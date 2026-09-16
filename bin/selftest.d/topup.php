@@ -103,6 +103,43 @@ check('a missing or corrupt state file is treated as nothing switched on', stati
     }
 });
 
+check('a switch that cannot be saved is not reported as saved', static function () use ($stateFile) {
+    // The failure this exists for: file_put_contents returned false,
+    // nothing checked it, and the object had already updated itself in
+    // memory -- so the screen redrew showing the method on, the admin
+    // was told it was on, and the next request read the file and found
+    // it off. Everything agreed except the copy that lasts.
+    $file = $stateFile();
+    file_put_contents($file, '{}');
+
+    if (!chmod($file, 0444) || is_writable($file)) {
+        @unlink($file);
+
+        return true;   // a host where this cannot be staged; nothing to prove
+    }
+
+    try {
+        $state = new MethodState($file);
+
+        try {
+            $state->toggle('gateway');
+
+            return 'toggle() reported success on a file it could not write';
+        } catch (\Throwable $e) {
+            // Expected. What matters is what it left behind.
+        }
+
+        if ($state->isEnabled('gateway')) {
+            return 'the in-memory state moved even though the write failed';
+        }
+
+        return $state->isWritable() ? 'isWritable() did not notice a read-only file' : true;
+    } finally {
+        @chmod($file, 0644);
+        @unlink($file);
+    }
+});
+
 check('the ledger reference type is stable', static function () {
     // Written into every top-up wallet entry. Changing it orphans the
     // link between an entry and the method that produced it.
@@ -171,6 +208,21 @@ check('the switch screen does not depend on the ledger', static function () {
     return str_contains($body[0], '$this->finance->report(')
         ? 'methods() calls Finance::report() directly again; a failed query takes the switches with it'
         : true;
+});
+
+check('the toggle refuses to claim a save it did not get', static function () {
+    // Paired with the MethodState check above: the store now throws, and
+    // this is the half that has to catch it and say so instead of
+    // carrying on into the success path.
+    $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Bot/Callback/Admin/ToggleMethod.php');
+
+    if (!preg_match('/try\s*\{\s*\$enabled = \$this->state->toggle\(.*?\}\s*catch/s', $source)) {
+        return 'the toggle() call is no longer guarded, so a failed save reports success';
+    }
+
+    return str_contains($source, 'is unchanged')
+        ? true
+        : 'the failure path no longer tells the admin the method is unchanged';
 });
 
 check('a flipped switch is never left unreported', static function () {

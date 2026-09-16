@@ -94,16 +94,35 @@ class Settings
         return is_array($data) ? $data : [];
     }
 
+    /**
+     * Saves the overrides, or throws saying why not.
+     *
+     * A silently discarded write here is the same bug as an unsaved
+     * on/off switch, one layer down and harder to spot: `ext:set` would
+     * print the new value and exit zero, the extension would go on
+     * reading the old one, and the operator would be looking at a
+     * setting they had every reason to believe was applied.
+     */
     private function write(): void
     {
-        if (!is_dir($this->storagePath)) {
-            mkdir($this->storagePath, 0775, true);
+        if (!is_dir($this->storagePath) && !@mkdir($this->storagePath, 0775, true) && !is_dir($this->storagePath)) {
+            throw new \RuntimeException(
+                "Settings for {$this->slug} could not be saved: {$this->storagePath} could not be created."
+            );
         }
 
-        file_put_contents(
-            $this->file(),
-            json_encode($this->overrides, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            LOCK_EX
+        $json = json_encode(
+            $this->overrides,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
         );
+
+        $written = $json === false ? false : @file_put_contents($this->file(), $json, LOCK_EX);
+
+        if ($written === false || $written !== strlen((string) $json)) {
+            throw new \RuntimeException(
+                "Settings for {$this->slug} could not be saved to {$this->file()}: "
+                    . (error_get_last()['message'] ?? 'unknown error')
+            );
+        }
     }
 }

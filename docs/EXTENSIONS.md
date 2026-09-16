@@ -2325,6 +2325,18 @@ of `Extension\State`, where absent means enabled, and the difference is
 money: an extension appearing on disk and working is a convenience, a
 payment route appearing and immediately taking customers' money is not.
 
+**A decision that cannot be saved is refused, not reported.** The switch
+file, extension state and extension settings all throw if the write
+fails rather than returning quietly — and none of them update themselves
+in memory until it has succeeded. The failure they exist to prevent is
+specific: an unwritable `storage/` (typically owned by whoever ran the
+installer, on a host where the web server is somebody else) used to
+leave every caller in the same request believing the change had been
+made, while the file — the only copy the *next* request reads — had not
+changed. Everything agreed except the copy that lasts. If you write your
+own state file, check what `file_put_contents` returned.
+`php bin/console doctor` reports an unwritable switch file.
+
 **The switch never depends on the database.** The on/off state is a file,
 so a payment route can be closed on a bot whose database is the thing
 that has gone wrong, and **/admin → Top-ups → 💳 Payment methods** draws
