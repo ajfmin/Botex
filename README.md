@@ -79,10 +79,20 @@ php bin/console doctor     # checks the environment and says what is missing
 
 `storage/` must be writable **by the user the webhook runs as**, not only
 by the one that ran the commands above. Switches, settings and extension
-state live there; `doctor` will tell you if the bot cannot write to it.
+state live there, and a bot that cannot write them appears to accept
+changes and then forgets them.
 
 ```bash
-chown -R www-data:www-data storage/    # whatever your web server runs as
+ps aux | grep php-fpm | head -2        # find that user: often www or www-data
+chown -R www:www storage/
+chmod -R 775 storage/
+```
+
+`doctor` names anything it cannot write — but run it **as that user**,
+since as `root` everything looks writable:
+
+```bash
+sudo -u www php bin/console doctor
 ```
 
 Point Telegram's webhook at `public/webhook.php`, and run the worker if you

@@ -92,6 +92,25 @@ function fail(string $message): never
     exit(1);
 }
 
+/**
+ * The user this process is running as, or '' if it cannot be told.
+ *
+ * Only used to qualify writability answers. Whether `storage/` is
+ * writable depends entirely on who is asking, and the two users that
+ * matter -- whoever runs this console and whoever runs the webhook --
+ * are routinely different on a panel-managed host.
+ */
+function whoami(): string
+{
+    if (function_exists('posix_geteuid') && function_exists('posix_getpwuid')) {
+        $user = posix_getpwuid(posix_geteuid());
+
+        return is_array($user) ? (string) ($user['name'] ?? '') : '';
+    }
+
+    return (string) (getenv('USER') ?: getenv('USERNAME') ?: '');
+}
+
 function needSlug(?string $slug): string
 {
     return $slug ?? fail('Usage: php bin/console <command> <slug>');
@@ -879,12 +898,18 @@ try {
                 $problems++;
             }
 
-            // Writability of what an update has to touch.
+            // Writability of what an update has to touch. Said as "to
+            // whoever is running this", because that is all any of these
+            // answers can mean.
+            $me = whoami();
+            echo '  - checking as ' . ($me === '' ? 'an unknown user' : $me) . PHP_EOL;
+
             foreach (['src', 'extensions', 'storage'] as $directory) {
                 $path = dirname(__DIR__) . '/' . $directory;
 
                 if (is_dir($path) && !is_writable($path)) {
-                    echo "  ! {$directory}/ is not writable, so updates will fail." . PHP_EOL;
+                    echo "  ! {$directory}/ is not writable" . ($me === '' ? '' : " by {$me}")
+                        . ', so updates will fail.' . PHP_EOL;
                     $problems++;
                 }
             }
@@ -900,6 +925,14 @@ try {
                 echo '  ! payment method switches are not writable: ' . $switches->path() . PHP_EOL;
                 echo '    Turning a payment method on or off will fail.' . PHP_EOL;
                 $problems++;
+            } elseif (whoami() === 'root') {
+                // Root can write anything, so a clean answer here proves
+                // nothing about the user the webhook actually runs as --
+                // and that is precisely the mismatch this check exists
+                // to catch. Saying "ok" to root would send somebody back
+                // to the panel to press the button again.
+                echo '  - storage is writable, but this ran as root, which proves nothing.' . PHP_EOL;
+                echo '    Check the user the webhook runs as: sudo -u www php bin/console doctor' . PHP_EOL;
             }
 
             // The update baseline.
