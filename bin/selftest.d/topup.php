@@ -147,6 +147,70 @@ check('a payment method can explain its own condition', static function () {
     return true;
 });
 
+check('the switch screen does not depend on the ledger', static function () {
+    // MethodState is a file so a payment route can be closed on a bot
+    // whose database is the thing that is broken. That promise is worth
+    // nothing if the screen carrying the switches refuses to draw
+    // without a query -- which is what happened: `topups` arrived in
+    // 1.1, an install updated without `migrate` had no such table, and
+    // pressing Turn on flipped the switch and then died rendering the
+    // result. The admin saw nothing change, pressed again, and turned it
+    // back off.
+    $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Bot/Admin/Section/TopUp.php');
+
+    if (!str_contains($source, 'private function switchesOnly')) {
+        return 'the methods screen has no path that renders without the report';
+    }
+
+    if (!preg_match('/function methods\(.*?\n    }/s', $source, $body)) {
+        return 'could not read methods()';
+    }
+
+    // A direct report() call in there is the regression: it would throw
+    // before a single switch was drawn.
+    return str_contains($body[0], '$this->finance->report(')
+        ? 'methods() calls Finance::report() directly again; a failed query takes the switches with it'
+        : true;
+});
+
+check('a flipped switch is never left unreported', static function () {
+    // The switch is written before the screen is redrawn, so a failure
+    // in between is silent on the phone. If the redraw cannot happen the
+    // admin has to be told what state it landed in -- otherwise the
+    // obvious response, pressing again, quietly reverses it.
+    $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Bot/Callback/Admin/ToggleMethod.php');
+
+    if (!preg_match('/try\s*\{.*?methods\(.*?\}\s*catch/s', $source)) {
+        return 'the re-render is no longer guarded';
+    }
+
+    return str_contains($source, 'do not press again')
+        ? true
+        : 'the failure path no longer warns against pressing again';
+});
+
+check('every core table is accounted for', static function () {
+    // doctor checks this list against the database. A table added to
+    // run() and left out of tables() is a migration nothing will notice
+    // is missing.
+    $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Support/Migrator.php');
+
+    preg_match_all("/(?:createIfMissing|hasTable)\('([a-z_]+)'/", $source, $found);
+    preg_match('/function tables\(\): array.*?return \[(.*?)\];/s', $source, $listed);
+
+    if (!isset($listed[1])) {
+        return 'Migrator::tables() could not be read';
+    }
+
+    foreach (array_unique($found[1]) as $table) {
+        if (!str_contains($listed[1], "'{$table}'")) {
+            return "Migrator creates '{$table}' but does not list it in tables()";
+        }
+    }
+
+    return true;
+});
+
 group('Admin panel buttons');
 
 check('navigation is no longer offered inline as well', static function () {

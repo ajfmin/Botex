@@ -188,4 +188,44 @@ class Migrator
 
         return $created;
     }
+
+    /**
+     * Every table run() is responsible for.
+     *
+     * Kept next to the migrations rather than in the caller, so a table
+     * added above cannot be left out of the check that it exists. That
+     * gap has already cost once: `topups` arrived in 1.1 and an install
+     * updated in place without `migrate` kept answering "database
+     * reachable" -- the only symptom was an admin panel screen that
+     * failed to redraw, which looked like a broken button rather than a
+     * missing table.
+     *
+     * @return array<string>
+     */
+    public static function tables(): array
+    {
+        return [
+            'users',
+            'conversations',
+            'run_actions',
+            'wallets',
+            'wallet_transactions',
+            'topups',
+            'jobs',
+            WorkerLease::TABLE,
+        ];
+    }
+
+    /**
+     * The tables run() would create, that are not there.
+     *
+     * @return array<string>
+     */
+    public static function missing(): array
+    {
+        return array_values(array_filter(
+            self::tables(),
+            static fn (string $table) => !Schema::hasTable($table)
+        ));
+    }
 }

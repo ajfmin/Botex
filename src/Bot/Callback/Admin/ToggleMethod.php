@@ -9,6 +9,7 @@ use Botex\Bot\Feeder;
 use Botex\Bot\Middleware\IsAdmin;
 use Botex\Bot\TopUp\MethodState;
 use Botex\Bot\TopUp\PaymentMethods;
+use Botex\Support\Log\Logger;
 use Botex\Telegram\Bot;
 use Botex\Telegram\Update;
 
@@ -32,7 +33,8 @@ class ToggleMethod implements CallbackInterface, MatchesCallback
         private Bot $bot,
         private PaymentMethods $methods,
         private MethodState $state,
-        private Feeder $feeder
+        private Feeder $feeder,
+        private Logger $log
     ) {
     }
 
@@ -94,19 +96,43 @@ class ToggleMethod implements CallbackInterface, MatchesCallback
         $method = $this->methods->make($key);
         $title = $method === null ? $key : $method::title();
 
+        // Re-render rather than send: the admin is looking at the list
+        // they just changed, and it should show the change.
+        //
+        // Guarded, because the switch has already flipped by this point
+        // and a failure here is silent on the admin's phone: the screen
+        // simply does not change, which reads as "the button did
+        // nothing", and the natural response -- press it again -- turns
+        // the method straight back off. That is how a working switch
+        // became a bug report. If the screen cannot be redrawn, say so
+        // in a popup the admin has to dismiss, naming the state it
+        // actually landed in.
+        try {
+            $this->feeder->make(TopUp::class)->methods(
+                $update,
+                ($enabled ? '🟢 ' : '🔴 ') . $this->escape($title) . ($enabled ? ' switched on.' : ' switched off.')
+            );
+        } catch (\Throwable $e) {
+            $this->log->exception($e, 'Payment method screen could not be redrawn', context: ['method' => $key]);
+
+            if ($callbackId !== null) {
+                $this->bot->answerCallback(
+                    $callbackId,
+                    $title . ($enabled ? ' is now ON.' : ' is now OFF.')
+                        . ' The screen could not be redrawn -- do not press again, it would switch back.',
+                    true
+                );
+            }
+
+            return;
+        }
+
         if ($callbackId !== null) {
             $this->bot->answerCallback(
                 $callbackId,
                 $title . ($enabled ? ' is now on.' : ' is now off.')
             );
         }
-
-        // Re-render rather than send: the admin is looking at the list
-        // they just changed, and it should show the change.
-        $this->feeder->make(TopUp::class)->methods(
-            $update,
-            ($enabled ? '🟢 ' : '🔴 ') . $this->escape($title) . ($enabled ? ' switched on.' : ' switched off.')
-        );
     }
 
     private function escape(string $value): string

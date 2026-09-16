@@ -136,7 +136,7 @@ most of it. Details in [docs/UPDATING.md](docs/UPDATING.md).
 ## Checking your install
 
 ```bash
-php bin/console doctor     # environment, extensions, legacy classes
+php bin/console doctor     # environment, extensions, missing tables, legacy classes
 php bin/console version    # version, edited core files, archive
 php bin/selftest           # the archive and update machinery, offline
 ```

@@ -2325,6 +2325,16 @@ of `Extension\State`, where absent means enabled, and the difference is
 money: an extension appearing on disk and working is a convenience, a
 payment route appearing and immediately taking customers' money is not.
 
+**The switch never depends on the database.** The on/off state is a file,
+so a payment route can be closed on a bot whose database is the thing
+that has gone wrong, and **/admin → Top-ups → 💳 Payment methods** draws
+its switches from the registry and that file alone. If the report behind
+the figures cannot be read, the figures go and the switches stay, with a
+line on screen saying so. Nothing your method does at `description()` or
+`isConfigured()` time should need a query either — those run while that
+screen is being drawn, which is exactly when the database may be the
+problem.
+
 #### Settling a payment
 
 When your extension is satisfied that somebody really paid, call

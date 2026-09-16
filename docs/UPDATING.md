@@ -35,8 +35,17 @@ bots download is a static file with a published hash.
 ```bash
 php bin/console core:check          # anything new?
 php bin/console core:update         # apply it, or refuse and tell you why
+php bin/console migrate             # tables the new version added
 php bin/console core:rollback       # put it back
 ```
+
+**`migrate` is part of updating, not a separate errand.** An update
+writes code, never your database, so a release that added a table leaves
+an install with the new code and the old schema. Nothing crashes on boot
+— it crashes later, in whichever screen wanted the new table, and on
+Telegram that surfaces as a button that appears to do nothing. `migrate`
+is idempotent, so run it after every update whether or not you think one
+was needed. `php bin/console doctor` names any table that is missing.
 
 ```bash
 php bin/console ext:outdated

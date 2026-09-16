@@ -929,6 +929,20 @@ try {
             try {
                 $feeder->make(UserService::class)->stats();
                 echo '  ok database reachable' . PHP_EOL;
+
+                // Reachable is not the same as migrated. An install
+                // updated in place has the tables the old version
+                // created and none of the new ones, and the code that
+                // wants a new table is usually somewhere an operator
+                // only finds by pressing the button that breaks.
+                $missing = \Botex\Support\Migrator::missing();
+
+                if ($missing !== []) {
+                    echo '  ! ' . count($missing) . ' core table(s) missing: '
+                        . implode(', ', $missing) . PHP_EOL;
+                    echo '    Run: php bin/console migrate' . PHP_EOL;
+                    $problems++;
+                }
             } catch (\Throwable $e) {
                 echo '  ! database: ' . $e->getMessage() . PHP_EOL;
                 echo '    Run: php bin/console migrate' . PHP_EOL;
