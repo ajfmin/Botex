@@ -39,8 +39,16 @@ interface PaymentMethodInterface
     /** What the customer sees on the button. */
     public static function title(): string;
 
-    /** One line under the title on the admin's screen. */
-    public static function description(): string;
+    /**
+     * One line under the title on the admin's screen.
+     *
+     * An instance method, unlike key() and title(), because the most
+     * useful thing this line can say is usually about configuration --
+     * "no card number set" -- and a static method could not read a
+     * setting to find that out. Core only ever asks a built method for
+     * it, so it is free to depend on how the method is set up.
+     */
+    public function description(): string;
 
     /**
      * Whether this method can actually take money right now.

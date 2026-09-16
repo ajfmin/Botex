@@ -101,6 +101,15 @@ class TopUp implements AdminSectionInterface, HasSubMenu
                 self::WINDOW
             );
 
+            // The method's own line, which is where a 🟡 says what it is
+            // waiting for. Without it an admin is told the route is not
+            // configured and left to guess which setting is missing.
+            if ($method['description'] !== '') {
+                $lines[] = '<i>' . $this->escape((string) $method['description']) . '</i>';
+            }
+
+            $lines[] = '';
+
             if (!$method['registered']) {
                 continue;
             }
@@ -111,7 +120,12 @@ class TopUp implements AdminSectionInterface, HasSubMenu
             ));
         }
 
-        $lines[] = '';
+        // Each method block already ends with a blank line; a second
+        // one would open a gap before the footer.
+        if (end($lines) !== '') {
+            $lines[] = '';
+        }
+
         $lines[] = '<i>Off means customers are not offered it. '
             . 'Nothing already taken is affected.</i>';
 

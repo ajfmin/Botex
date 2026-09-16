@@ -52,7 +52,7 @@ class Finance
      *     from: string,
      *     currency: string,
      *     windows: array<string, array{count:int, amount:int, customers:int}>,
-     *     methods: array<string, array{key:string, title:string, count:int, amount:int, enabled:bool, registered:bool, configured:bool}>,
+     *     methods: array<string, array{key:string, title:string, description:string, count:int, amount:int, enabled:bool, registered:bool, configured:bool}>,
      *     daily: array<int, array{day:string, count:int, amount:int}>,
      *     average: int,
      *     largest: int,
@@ -95,7 +95,7 @@ class Finance
      * who appears, and the registry only decides what is said about them.
      *
      * @param  array<TopUp> $rows
-     * @return array<string, array{key:string, title:string, count:int, amount:int, enabled:bool, registered:bool, configured:bool}>
+     * @return array<string, array{key:string, title:string, description:string, count:int, amount:int, enabled:bool, registered:bool, configured:bool}>
      */
     private function byMethod(array $rows): array
     {
@@ -107,6 +107,7 @@ class Finance
             $methods[$key] = [
                 'key' => $key,
                 'title' => $instance === null ? $key : $instance::title(),
+                'description' => $instance === null ? '' : $instance->description(),
                 'count' => 0,
                 'amount' => 0,
                 'enabled' => $this->state->isEnabled($key),
@@ -121,6 +122,7 @@ class Finance
             $methods[$key] ??= [
                 'key' => $key,
                 'title' => $key,
+                'description' => '',
                 'count' => 0,
                 'amount' => 0,
                 'enabled' => $this->state->isEnabled($key),

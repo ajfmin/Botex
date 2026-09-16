@@ -2290,7 +2290,7 @@ removed, while the accounting it feeds stays put.
 | --- | --- |
 | `static key(): string` | stable, unique across every installed extension; **MUST** match `[A-Za-z0-9._-]+` |
 | `static title(): string` | what the customer sees on the button |
-| `static description(): string` | one line under the title on the admin's screen |
+| `description(): string` | one line under the title on the admin's screen; an instance method, so it can report what is missing |
 | `isConfigured(): bool` | whether it can take money *right now* |
 | `start(Update $update): void` | the customer picked this; do whatever paying means here |
 
