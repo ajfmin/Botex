@@ -37,6 +37,18 @@ class Migrator
             $created[] = 'users.status';
         }
 
+        // Added with broadcasts, so an existing install may lack it.
+        // Not a status value: "the person blocked the bot" and "an admin
+        // blocked the person" are different facts and one must not
+        // overwrite the other. See Botex\Repository\UserRepository.
+        if (!Schema::hasColumn('users', 'unreachable_at')) {
+            Schema::addMissing('users', function ($table) {
+                $table->timestamp('unreachable_at')->nullable();
+            });
+
+            $created[] = 'users.unreachable_at';
+        }
+
         if (!Schema::hasTable('conversations')) {
             Store::migrate();
             $created[] = 'conversations';
@@ -179,6 +191,50 @@ class Migrator
             $table->index('lease_until');
         })) {
             $created[] = 'jobs';
+        }
+
+        // One row per announcement, holding the whole state of the send:
+        // what to deliver, how far through it is, and how it went. There
+        // is no row per recipient on purpose -- see Botex\Model\Broadcast.
+        if (Schema::createIfMissing('broadcasts', function ($table) {
+            $table->id();
+            // The admin who composed it, by telegram id, so the report
+            // can be sent back to them long after they walked away.
+            $table->unsignedBigInteger('created_by');
+            // 'copy' repeats a message the bot can see; 'text' carries
+            // its own body, which is how the CLI sends one.
+            $table->string('kind', 16)->default('copy');
+            // Where the original lives. Kept apart from body because a
+            // copy has no text of its own to store.
+            $table->bigInteger('from_chat_id')->nullable();
+            $table->unsignedBigInteger('message_id')->nullable();
+            $table->text('body')->nullable();
+            $table->string('parse_mode', 16)->nullable();
+            $table->boolean('silent')->default(false);
+            $table->string('status', 16)->default('queued');
+            // Audience size as measured when sending began. Progress is
+            // shown against it rather than against a recount, so the bar
+            // cannot go backwards when someone new presses /start.
+            $table->unsignedInteger('total')->default(0);
+            $table->unsignedInteger('sent')->default(0);
+            $table->unsignedInteger('blocked')->default(0);
+            $table->unsignedInteger('gone')->default(0);
+            $table->unsignedInteger('failed')->default(0);
+            $table->unsignedInteger('skipped')->default(0);
+            // Highest users.id already tried. This is what makes a
+            // broadcast survive a pause, a crash or a worker restart.
+            $table->unsignedBigInteger('cursor')->default(0);
+            $table->string('last_error', 500)->nullable();
+            $table->timestamp('started_at')->nullable();
+            $table->timestamp('finished_at')->nullable();
+            $table->timestamps();
+
+            // The panel's two questions: is one running, and what were
+            // the last few.
+            $table->index('status');
+            $table->index('created_by');
+        })) {
+            $created[] = 'broadcasts';
         }
 
         if (!Schema::hasTable(WorkerLease::TABLE)) {

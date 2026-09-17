@@ -25,6 +25,7 @@ bots download is a static file with a published hash.
 - [What is yours and what is ours](#what-is-yours-and-what-is-ours)
 - [Updating extensions](#updating-extensions)
 - [Updating the core](#updating-the-core)
+- [Updating everything at once](#updating-everything-at-once)
 - [Conflicts](#conflicts)
 - [Backups and rollback](#backups-and-rollback)
 - [What updates refuse to do](#what-updates-refuse-to-do)
@@ -41,6 +42,12 @@ php bin/console core:rollback       # put it back
 ```bash
 php bin/console ext:outdated
 php bin/console ext:update --all
+```
+
+Or both at once, freshly checked:
+
+```bash
+php bin/console update:all
 ```
 
 Everything is dry-runnable. `--dry-run` prints the plan and writes nothing:
@@ -256,6 +263,55 @@ records what is there now, which means it also adopts any edits you have
 made — that is the point, but it is why it is a separate, deliberate step
 rather than something an update does for you.
 
+## Updating everything at once
+
+```bash
+php bin/console update:all
+php bin/console update:all --dry-run
+```
+
+One command for the thing an operator actually wants after being away
+for a month: look at the hub, and bring the whole install forward.
+
+It always looks. The cache exists so the admin panel never waits on the
+network, and a command whose entire job is "check, then apply" must not
+answer from it — so every lookup `update:all` makes is fresh.
+
+**Extensions first, the core last.** A core update rewrites the classes
+the running process is executing, so anything done after it runs on a
+mixture of the code that booted and the code now on disk. Putting it
+last means nothing runs in that state: the command ends, and you restart
+the worker as you would after any core update.
+
+That order has one real cost — an extension release that needs the core
+release in the same run. It is not left to fail with a requirement nobody
+can act on. The package says which core it wants, so when the pending
+core would satisfy it and the running one would not, the extension is
+reported as **deferred** and the summary tells you to run the command
+again:
+
+```
+  + Updated Clock 1.2.0 -> 1.3.0.
+  . Vpn: needs Botex ^1.4, the core update in this run provides it.
+        Run update:all again once it has been applied
+  + Updated core 1.3.1 -> 1.4.0.
+
+2 of 3 applied.
+
+Restart the job worker so it runs the new code.
+
+Then run this again: php bin/console update:all
+```
+
+One target failing never abandons the rest. Each is reported on its own
+line, and the exit code is non-zero only if something actually failed —
+a deferred target is not a failure, because re-running finishes the job.
+That distinction is what makes `update:all` safe to put in a deploy
+script.
+
+`--force` and `--dry-run` mean exactly what they mean for the
+single-target commands, and are passed to each of them.
+
 ## Conflicts
 
 A conflict is one file that **you edited** and **this release also
@@ -372,6 +428,7 @@ become remote code execution.
 | `core:adopt` | re-records the files it already owns; adopts everything only on a fresh install |
 | `core:backups` | what can be rolled back to |
 | `core:rollback [<backup>]` | restores one; the newest by default |
+| `update:all [--dry-run] [--force]` | checks the hub afresh and applies every outstanding update, extensions first |
 
 ### Extensions
 

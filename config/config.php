@@ -108,6 +108,23 @@ return [
         'keep_finished' => (int) ($_ENV['JOB_KEEP_FINISHED'] ?? 604800),
     ],
 
+    'broadcast' => [
+        // Messages a second an announcement goes out at. Telegram will
+        // take roughly 30 before it starts answering 429, and a flood
+        // wait applies to *everything* the bot sends -- so a broadcast in
+        // a hurry stops a customer mid-checkout from getting answers.
+        // Half the allowance is the default for that reason. Capped at 30
+        // whatever is set here.
+        'rate' => (int) ($_ENV['BROADCAST_RATE'] ?? 15),
+
+        // Seconds of sending per worker run. The worker is one process
+        // running every schedule in turn, so a broadcast hands it back
+        // this often instead of holding it for the hours a large audience
+        // takes. Longer means less overhead and a slower response to
+        // Pause; shorter means the opposite.
+        'slice' => (int) ($_ENV['BROADCAST_SLICE'] ?? 30),
+    ],
+
     'logging' => [
         // Quietest level written to storage/logs/app-YYYY-MM-DD.log.
         // 'debug' shows every dispatch; 'info' records milestones;

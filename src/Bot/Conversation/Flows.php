@@ -18,6 +18,7 @@ class Flows
     private const CORE = [
         \Botex\Bot\Admin\Flow\ManageUserFlow::class,
         \Botex\Bot\Admin\Flow\AdjustBalanceFlow::class,
+        \Botex\Bot\Admin\Flow\BroadcastFlow::class,
     ];
 
     /** @var array<string, class-string<FlowInterface>>|null */

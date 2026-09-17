@@ -118,6 +118,8 @@ try {
     require __DIR__ . '/selftest.d/safety.php';
     require __DIR__ . '/selftest.d/hub.php';
     require __DIR__ . '/selftest.d/topup.php';
+    require __DIR__ . '/selftest.d/broadcast.php';
+    require __DIR__ . '/selftest.d/batch.php';
 } finally {
     cleanup($temp);
 }

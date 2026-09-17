@@ -23,6 +23,7 @@ class Jobs
      */
     private const CORE = [
         PruneJobs::class,
+        SendBroadcast::class,
     ];
 
     /** @var array<string, class-string<JobInterface>>|null */

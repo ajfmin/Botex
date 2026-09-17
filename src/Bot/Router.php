@@ -18,6 +18,7 @@ class Router
         Callback\Admin\StartUserAction::class,
         Callback\Admin\StartWalletAction::class,
         Callback\Admin\ToggleMethod::class,
+        Callback\Admin\ManageBroadcast::class,
         Callback\Run::class,
     ];
 

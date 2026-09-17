@@ -37,6 +37,19 @@ class MessageBuilder
         return $this;
     }
 
+    /**
+     * Delivers without a notification sound.
+     *
+     * Worth having for an announcement: a broadcast reaches everybody at
+     * once, and the difference between a bot that buzzes a phone at
+     * midnight and one that does not is whether people keep it.
+     */
+    public function silent(bool $silent = true): self
+    {
+        $this->data['disable_notification'] = $silent;
+        return $this;
+    }
+
     public function replyTo(int $messageId): self
     {
         $this->data['reply_to_message_id'] = $messageId;

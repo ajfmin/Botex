@@ -54,6 +54,12 @@ likely to be country-specific and to need credentials core should never
 hold. There is a financial report in the panel and a charted one on the
 web.
 
+**Broadcasts.** Write a message once and everyone the bot can still reach
+gets it privately -- text, a photo, whatever you can send the bot, copied to
+each person. Paced at 15 a second so an announcement never costs the bot the
+flood wait that would stop it answering customers, pausable while it runs,
+and it reports back who received it, who has blocked the bot and who is gone.
+
 **An admin panel.** Inside Telegram, plus a token-gated read-only web page.
 Both are deliberately read-only about anything that writes code. Every
 control appears exactly once: navigation is on the reply keyboard,
@@ -115,6 +121,7 @@ php hub/bin/hub publish extensions/Clock --changelog="First release."
 ## Updating safely
 
 ```bash
+php bin/console update:all           # check the hub and apply everything outstanding
 php bin/console core:check           # what is available, what you have edited
 php bin/console core:update --dry-run
 php bin/console core:update
@@ -130,7 +137,8 @@ most of it. Details in [docs/UPDATING.md](docs/UPDATING.md).
 | | |
 | --- | --- |
 | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) | writing extensions — the long one, with a worked example |
-| [docs/UPDATING.md](docs/UPDATING.md) | the safety model, conflicts, rollback |
+| [docs/UPDATING.md](docs/UPDATING.md) | the safety model, conflicts, rollback, update:all |
+| [docs/BROADCAST.md](docs/BROADCAST.md) | announcing to every user, and the rate limit that makes it safe |
 | [docs/ARCHIVE.md](docs/ARCHIVE.md) | the package format and hosting an archive |
 
 ## Checking your install

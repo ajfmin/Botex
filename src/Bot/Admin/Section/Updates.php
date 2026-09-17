@@ -108,11 +108,14 @@ class Updates implements AdminSectionInterface
 
         $lines[] = '<b>Apply on the host</b>';
 
-        if ($core !== null) {
+        // One command when there is more than one thing to do, because
+        // the alternative is an admin applying half of it and wondering
+        // why the panel still says there is an update.
+        if ($core !== null && $extensions !== []) {
+            $lines[] = '<code>php bin/console update:all</code>';
+        } elseif ($core !== null) {
             $lines[] = '<code>php bin/console core:update</code>';
-        }
-
-        if ($extensions !== []) {
+        } else {
             $lines[] = '<code>php bin/console ext:update --all</code>';
         }
 

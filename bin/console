@@ -32,6 +32,8 @@
  *   php bin/console core:rollback [<backup>]
  *   php bin/console core:backups
  *
+ *   php bin/console update:all [--dry-run] [--force] [--verbose]
+ *
  *   php bin/console archive:ping
  *
  *   php bin/console wallet:show <telegram-id>
@@ -39,6 +41,11 @@
  *   php bin/console wallet:debit <telegram-id> <amount> <reason>
  *   php bin/console wallet:refund <transaction-id> [amount]
  *   php bin/console wallet:stats
+ *
+ *   php bin/console broadcast:send "<html>" [--quiet] [--yes]
+ *   php bin/console broadcast:list
+ *   php bin/console broadcast:show <id>
+ *   php bin/console broadcast:pause|resume|cancel <id>
  *
  *   php bin/console action:list
  *   php bin/console action:stats
@@ -679,6 +686,83 @@ try {
 
             break;
 
+        case 'update:all':
+            needArchive($feeder->make(Client::class));
+
+            $batch = $feeder->make(\Botex\Update\Batch::class);
+
+            echo 'Checking the archive...' . PHP_EOL;
+
+            $steps = $batch->run($dryRun, $force);
+
+            if ($steps === []) {
+                echo PHP_EOL . 'Everything is up to date.' . PHP_EOL;
+                break;
+            }
+
+            echo PHP_EOL;
+
+            foreach ($steps as $step) {
+                echo $step->line() . PHP_EOL;
+
+                // The plan itself only where it earns the room: a refusal
+                // is unreadable without the files it names, and --dry-run
+                // is nothing but the plans.
+                if ($dryRun || $verbose || $step->state === \Botex\Update\Step::FAILED) {
+                    foreach ($step->plan?->lines($verbose) ?? [] as $line) {
+                        echo '  ' . $line . PHP_EOL;
+                    }
+                }
+            }
+
+            $failed = array_filter(
+                $steps,
+                static fn ($step): bool => $step->state === \Botex\Update\Step::FAILED
+            );
+
+            $deferred = array_filter(
+                $steps,
+                static fn ($step): bool => $step->state === \Botex\Update\Step::DEFERRED
+            );
+
+            $coreStep = null;
+
+            foreach ($steps as $step) {
+                if ($step->isCore()) {
+                    $coreStep = $step;
+                }
+            }
+
+            echo PHP_EOL . sprintf(
+                '%d of %d %s.',
+                count($steps) - count($failed) - count($deferred),
+                count($steps),
+                $dryRun ? 'would be applied' : 'applied'
+            ) . PHP_EOL;
+
+            if ($dryRun) {
+                echo 'Nothing was written (--dry-run).' . PHP_EOL;
+                break;
+            }
+
+            if ($coreStep?->state === \Botex\Update\Step::UPDATED) {
+                echo PHP_EOL . 'Restart the job worker so it runs the new code.' . PHP_EOL;
+
+                if ($coreStep->result?->dependenciesChanged) {
+                    echo 'Then run: composer install' . PHP_EOL;
+                }
+            }
+
+            if ($deferred !== []) {
+                echo PHP_EOL . 'Then run this again: php bin/console update:all' . PHP_EOL;
+            }
+
+            if ($failed !== []) {
+                exit(1);
+            }
+
+            break;
+
         case 'core:diff':
             $inventory = $feeder->make(Inventory::class);
 
@@ -1028,6 +1112,119 @@ try {
             echo 'Total held: ' . $stats['formatted'] . PHP_EOL;
             break;
 
+        // Announcements. Sending is the one panel action that is also
+        // here, because a bot is often told to announce something by cron
+        // or a deploy script, and neither holds a Telegram account.
+        case 'broadcast:send':
+            $broadcasts = $feeder->make(\Botex\Broadcast\BroadcastService::class);
+
+            $body = trim(implode(' ', array_slice($argv, 2)));
+
+            // Flags are arguments too, and a broadcast made of "--quiet"
+            // is not what anybody meant.
+            $body = trim(preg_replace('/(^|\s)--\S+/', '', $body) ?? $body);
+
+            if ($body === '') {
+                fail(implode(PHP_EOL, [
+                    'Usage: php bin/console broadcast:send "<html message>" [--quiet] [--yes]',
+                    '',
+                    'Sends to every user the bot can still reach. HTML formatting is allowed.',
+                ]));
+            }
+
+            $audience = $broadcasts->audience();
+
+            echo 'To:       ' . number_format($audience) . ' user(s)' . PHP_EOL;
+            echo 'Rate:     ' . $broadcasts->rate() . '/second' . PHP_EOL;
+            echo 'Takes:    about ' . $broadcasts->duration($broadcasts->estimate()) . PHP_EOL;
+            echo PHP_EOL . $body . PHP_EOL . PHP_EOL;
+
+            // A broadcast cannot be recalled, so the confirmation is not
+            // optional -- only automatable.
+            if (!in_array('--yes', $argv, true)) {
+                echo 'Nothing queued. Add --yes to send it.' . PHP_EOL;
+                break;
+            }
+
+            $broadcast = $broadcasts->queueText(
+                createdBy: (int) (($feeder->get(\Botex\Support\Config::class)->get('admins', [])[0]) ?? 0),
+                body: $body,
+                silent: in_array('--quiet', $argv, true)
+            );
+
+            echo 'Queued broadcast #' . (int) $broadcast->id . '.' . PHP_EOL;
+            echo 'It goes out from the worker: php bin/console jobs:work' . PHP_EOL;
+            break;
+
+        case 'broadcast:list':
+            $broadcasts = $feeder->make(\Botex\Broadcast\BroadcastService::class);
+            $rows = $broadcasts->recent(20);
+
+            echo 'Audience: ' . number_format($broadcasts->audience()) . ' reachable, '
+                . number_format($broadcasts->unreachable()) . ' unreachable' . PHP_EOL . PHP_EOL;
+
+            if ($rows === []) {
+                echo 'No broadcasts yet.' . PHP_EOL;
+                break;
+            }
+
+            printf("%-5s %-10s %8s %8s %8s %8s  %s\n",
+                'ID', 'STATUS', 'SENT', 'BLOCKED', 'GONE', 'FAILED', 'WHEN');
+
+            foreach ($rows as $row) {
+                printf("%-5d %-10s %8s %8s %8s %8s  %s\n",
+                    (int) $row->id,
+                    $row->status()->value,
+                    number_format((int) $row->sent),
+                    number_format((int) $row->blocked),
+                    number_format((int) $row->gone),
+                    number_format((int) $row->failed),
+                    $row->created_at ? $row->created_at->format('Y-m-d H:i') : '-'
+                );
+            }
+
+            break;
+
+        case 'broadcast:show':
+            $broadcasts = $feeder->make(\Botex\Broadcast\BroadcastService::class);
+            $broadcast = $broadcasts->find(needId($slug, 'Usage: php bin/console broadcast:show <id>'));
+
+            if ($broadcast === null) {
+                fail('No broadcast with that id.');
+            }
+
+            // The same report the admin gets on Telegram, with the markup
+            // taken back out.
+            foreach ($broadcasts->report($broadcast) as $line) {
+                echo html_entity_decode(strip_tags($line), ENT_QUOTES, 'UTF-8') . PHP_EOL;
+            }
+
+            break;
+
+        case 'broadcast:pause':
+        case 'broadcast:resume':
+        case 'broadcast:cancel':
+            $broadcasts = $feeder->make(\Botex\Broadcast\BroadcastService::class);
+            $what = substr($command, strlen('broadcast:'));
+            $id = needId($slug, "Usage: php bin/console broadcast:{$what} <id>");
+
+            $done = match ($what) {
+                'pause' => $broadcasts->pause($id),
+                'resume' => $broadcasts->resume($id),
+                default => $broadcasts->cancel($id),
+            };
+
+            // Written out rather than suffixed: "canceld" is what
+            // a rule gives you, and it reads as a typo in a tool.
+            $past = ['pause' => 'paused', 'resume' => 'resumed', 'cancel' => 'cancelled'][$what];
+
+            if (!$done) {
+                fail("Broadcast #{$id} cannot be {$past} from where it is.");
+            }
+
+            echo ucfirst($past) . " broadcast #{$id}." . PHP_EOL;
+            break;
+
         case 'action:list':
             // Both allowlists, because a button can target either.
             $runnables = $feeder->make(Runnables::class)->all();
@@ -1093,6 +1290,11 @@ try {
                     )->keyed('core:prune')
                 );
             }
+
+            // The standing broadcast runner. Armed here as well as on
+            // queue, so a worker started before anyone composed anything
+            // is already looking.
+            $feeder->make(\Botex\Broadcast\BroadcastService::class)->arm();
 
             if (in_array('--once', $argv, true)) {
                 // One pass, for cron-style supervision or a smoke test.
