@@ -26,9 +26,9 @@
  *   php bin/console ext:outdated [--fresh]
  *
  *   php bin/console core:check [--fresh]
- *   php bin/console core:update [--version=] [--dry-run] [--force]
+ *   php bin/console core:update [--version=] [--dry-run] [--force] [--reset]
  *   php bin/console core:diff [--verbose]
- *   php bin/console core:adopt
+ *   php bin/console core:adopt [--verbose]
  *   php bin/console core:rollback [<backup>]
  *   php bin/console core:backups
  *
@@ -633,10 +633,16 @@ try {
                 echo 'cannot be detected. Run: php bin/console core:adopt' . PHP_EOL;
             } else {
                 $dirty = $inventory->dirty();
+                $adopted = $inventory->adopted();
 
                 echo 'Local:     ' . ($dirty === []
                     ? 'no changes to core files'
                     : count($dirty) . ' core file(s) edited (core:diff to see them)') . PHP_EOL;
+
+                if ($adopted !== []) {
+                    echo 'Adopted:   ' . count($adopted)
+                        . ' file(s) kept as yours; an update that touches one will stop' . PHP_EOL;
+                }
             }
 
             if (!$listing->isNewerThan(Botex::VERSION)) {
@@ -658,21 +664,54 @@ try {
             needArchive($feeder->make(Client::class));
 
             $updater = $feeder->make(CoreUpdater::class);
+            $reset = in_array('--reset', $argv, true);
 
             if ($dryRun) {
                 $package = $feeder->make(\Botex\Remote\Downloader::class)
                     ->fetch('core', flagValue($argv, 'version'));
 
-                printPlan($updater->plan($package), $verbose);
+                printPlan($updater->plan($package, $reset), $verbose);
 
-                echo PHP_EOL . 'Nothing was written (--dry-run).' . PHP_EOL;
+                echo PHP_EOL . 'Nothing was written (--dry-run'
+                    . ($reset ? ' --reset' : '') . ').' . PHP_EOL;
                 break;
             }
 
-            $result = $updater->update(flagValue($argv, 'version'), $force);
+            if ($reset) {
+                $inventory = $feeder->make(Inventory::class);
+                $adopted = $inventory->adopted();
 
-            if ($result->plan->isEmpty()) {
+                echo 'Resetting the core: every file this release ships will be written,' . PHP_EOL;
+                echo 'whatever is there now. The originals go to storage/backups/.' . PHP_EOL;
+
+                if ($adopted !== []) {
+                    echo PHP_EOL . count($adopted) . ' adopted file(s) will be overwritten:' . PHP_EOL;
+
+                    foreach (array_slice($adopted, 0, $verbose ? count($adopted) : 10) as $path) {
+                        echo '  ~ ' . $path . PHP_EOL;
+                    }
+
+                    if (!$verbose && count($adopted) > 10) {
+                        echo '  ... and ' . (count($adopted) - 10) . ' more (-v for all)' . PHP_EOL;
+                    }
+                }
+
+                echo PHP_EOL;
+
+                $result = $updater->reset(flagValue($argv, 'version'));
+            } else {
+                $result = $updater->update(flagValue($argv, 'version'), $force);
+            }
+
+            if (!$reset && $result->plan->isEmpty()) {
                 echo 'The core is already at ' . $result->to . '; nothing to do.' . PHP_EOL;
+
+                $kept = $result->plan->count(Plan::KEPT);
+
+                if ($kept > 0) {
+                    echo $kept . ' adopted file(s) were left as they are.' . PHP_EOL;
+                }
+
                 break;
             }
 
@@ -779,12 +818,17 @@ try {
                 . ' recorded ' . ($inventory->recordedAt() ?? '?') . PHP_EOL;
             echo 'Running:  ' . Botex::VERSION . PHP_EOL . PHP_EOL;
 
-            if ($drift['changed'] === [] && $drift['removed'] === [] && $drift['added'] === []) {
+            if ($drift['changed'] === [] && $drift['removed'] === []
+                && $drift['added'] === [] && $drift['adopted'] === []) {
                 echo 'No core file differs from what was installed.' . PHP_EOL;
                 break;
             }
 
+            // Adopted files come first: they are the ones already decided,
+            // so reading past them is reading the list that still needs a
+            // decision.
             foreach ([
+                'adopted' => 'adopted, and safe from an update that does not touch them',
                 'changed' => 'edited',
                 'removed' => 'deleted',
                 'added' => 'added by you',
@@ -801,9 +845,10 @@ try {
                     ? $drift[$kind]
                     : array_slice($drift[$kind], 0, 10);
 
+                $mark = ['changed' => '~', 'removed' => '-', 'adopted' => 'o'][$kind] ?? '+';
+
                 foreach ($show as $path) {
-                    echo '  ' . ($kind === 'changed' ? '~' : ($kind === 'removed' ? '-' : '+'))
-                        . ' ' . $path . PHP_EOL;
+                    echo '  ' . $mark . ' ' . $path . PHP_EOL;
                 }
 
                 if (count($show) < count($drift[$kind])) {
@@ -815,57 +860,72 @@ try {
 
             if ($drift['changed'] !== [] || $drift['removed'] !== []) {
                 echo 'A core update will stop rather than overwrite these.' . PHP_EOL;
-                echo 'Move custom behaviour into an extension and it will never conflict.' . PHP_EOL;
+                echo 'Run core:adopt to keep them, or move the behaviour into an extension,' . PHP_EOL;
+                echo 'which no core update touches at all.' . PHP_EOL;
             }
 
             break;
 
         case 'core:adopt':
             $inventory = $feeder->make(Inventory::class);
-            $existed = $inventory->isUsable();
 
-            if ($existed && !$force) {
-                $dirty = $inventory->dirty();
+            if (!$inventory->isUsable()) {
+                // Nothing to measure against, so this is the one case that
+                // records the whole tree as though the core had shipped it.
+                // It is lossy by nature -- an edit made before there was a
+                // baseline is indistinguishable from upstream's own bytes --
+                // which is why it is only ever done once.
+                $recorded = $inventory->record();
 
-                if ($dirty !== []) {
-                    echo 'This would accept ' . count($dirty) . ' edited file(s) as the new baseline,' . PHP_EOL;
-                    echo 'so a future update would no longer warn about them:' . PHP_EOL . PHP_EOL;
-
-                    foreach (array_slice($dirty, 0, 10) as $path) {
-                        echo '  ~ ' . $path . PHP_EOL;
-                    }
-
-                    if (count($dirty) > 10) {
-                        echo '  ... and ' . (count($dirty) - 10) . ' more' . PHP_EOL;
-                    }
-
-                    echo PHP_EOL . 'Re-run with --force if that is what you want.' . PHP_EOL;
-                    break;
-                }
-            }
-
-            // Re-adopting keeps the ownership set it already has, and only
-            // re-reads those files from disk. Rescanning the tree instead
-            // is how a command an operator wrote in src/Bot/Command/ used
-            // to become core-owned -- and then be deleted by the next
-            // release that did not ship one by that name.
-            $official = $existed ? array_keys($inventory->hashes()) : null;
-
-            $recorded = $inventory->record(null, $official);
-            $mine = $inventory->userOwned();
-
-            echo "Recorded {$recorded} core file(s) as the baseline for " . Botex::VERSION . '.' . PHP_EOL;
-            echo 'Local changes are now measured against these.' . PHP_EOL;
-
-            if ($official === null) {
+                echo "Recorded {$recorded} core file(s) as the baseline for " . Botex::VERSION . '.' . PHP_EOL;
                 echo PHP_EOL . 'There was no baseline to narrow this to, so everything under the core' . PHP_EOL;
                 echo 'directories was adopted -- including any file you added yourself. After the' . PHP_EOL;
                 echo 'first core:update the record comes from the release itself and is exact.' . PHP_EOL;
                 break;
             }
 
+            $dirty = $inventory->dirty();
+            $already = $inventory->adopted();
+
+            if ($dirty === []) {
+                echo 'Nothing to adopt: no core file differs from what was installed.' . PHP_EOL;
+
+                if ($already !== []) {
+                    echo PHP_EOL . count($already) . ' file(s) are already adopted:' . PHP_EOL;
+
+                    foreach (array_slice($already, 0, $verbose ? count($already) : 10) as $path) {
+                        echo '  o ' . $path . PHP_EOL;
+                    }
+
+                    if (!$verbose && count($already) > 10) {
+                        echo '  ... and ' . (count($already) - 10) . ' more (-v for all)' . PHP_EOL;
+                    }
+                }
+
+                break;
+            }
+
+            echo 'Adopting ' . count($dirty) . ' changed core file(s):' . PHP_EOL . PHP_EOL;
+
+            foreach (array_slice($dirty, 0, $verbose ? count($dirty) : 20) as $path) {
+                echo '  o ' . $path
+                    . (is_file($inventory->absolute($path)) ? '' : '   (you removed this)') . PHP_EOL;
+            }
+
+            if (!$verbose && count($dirty) > 20) {
+                echo '  ... and ' . (count($dirty) - 20) . ' more (-v for all)' . PHP_EOL;
+            }
+
+            $inventory->keep($dirty);
+
+            echo PHP_EOL . 'Your version of each is recorded, alongside the version the core shipped.' . PHP_EOL;
+            echo 'A future release that does not touch these files will leave them exactly as' . PHP_EOL;
+            echo 'they are. One that does touch them stops and says so, rather than choosing.' . PHP_EOL;
+
+            $mine = $inventory->userOwned();
+
             if ($mine !== []) {
-                echo PHP_EOL . count($mine) . ' file(s) are yours and were left out of the baseline:' . PHP_EOL;
+                echo PHP_EOL . count($mine) . ' file(s) are yours outright and need no adopting:' . PHP_EOL;
 
                 foreach (array_slice($mine, 0, $verbose ? count($mine) : 10) as $path) {
                     echo '  + ' . $path . PHP_EOL;
@@ -927,9 +987,12 @@ try {
             if ($inventory->isUsable()) {
                 $dirty = $inventory->dirty();
 
+                $adopted = $inventory->adopted();
+
                 echo 'Core files: ' . ($dirty === []
                     ? 'unmodified'
-                    : count($dirty) . ' edited') . PHP_EOL;
+                    : count($dirty) . ' edited')
+                    . ($adopted === [] ? '' : ', ' . count($adopted) . ' adopted') . PHP_EOL;
             }
 
             echo 'Extensions: ' . count($registry->all()) . ' installed, '
@@ -979,9 +1042,17 @@ try {
             if (!$inventory->isUsable()) {
                 echo '  ! no core baseline recorded; run: php bin/console core:adopt' . PHP_EOL;
                 $problems++;
-            } elseif ($inventory->dirty() !== []) {
-                echo '  - ' . count($inventory->dirty())
-                    . ' core file(s) edited; core:update will stop rather than overwrite them.' . PHP_EOL;
+            } else {
+                if ($inventory->dirty() !== []) {
+                    echo '  - ' . count($inventory->dirty())
+                        . ' core file(s) edited; core:update will stop rather than overwrite them.' . PHP_EOL;
+                    echo '    core:adopt keeps them; core:diff shows them.' . PHP_EOL;
+                }
+
+                if ($inventory->adopted() !== []) {
+                    echo '  ok ' . count($inventory->adopted())
+                        . ' adopted core file(s); a release that changes one will stop.' . PHP_EOL;
+                }
             }
 
             // Things the archive needs.

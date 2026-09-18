@@ -115,6 +115,7 @@ try {
     require __DIR__ . '/selftest.d/registry.php';
     require __DIR__ . '/selftest.d/dependencies.php';
     require __DIR__ . '/selftest.d/ownership.php';
+    require __DIR__ . '/selftest.d/adoption.php';
     require __DIR__ . '/selftest.d/safety.php';
     require __DIR__ . '/selftest.d/hub.php';
     require __DIR__ . '/selftest.d/topup.php';

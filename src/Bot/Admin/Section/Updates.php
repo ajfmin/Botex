@@ -144,6 +144,17 @@ class Updates implements AdminSectionInterface
             return;
         }
 
+        $adopted = $this->availability->adopted();
+
+        if ($adopted !== []) {
+            $lines[] = sprintf(
+                '%d core file(s) adopted. They are kept as they are unless this',
+                count($adopted)
+            );
+            $lines[] = 'release changes one, in which case the update stops.';
+            $lines[] = '';
+        }
+
         $conflicts = $this->availability->conflicts();
 
         if ($conflicts === []) {

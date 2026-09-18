@@ -25,6 +25,8 @@ bots download is a static file with a published hash.
 - [What is yours and what is ours](#what-is-yours-and-what-is-ours)
 - [Updating extensions](#updating-extensions)
 - [Updating the core](#updating-the-core)
+- [Adopting a change](#adopting-a-change)
+- [Starting over: `--reset`](#starting-over---reset)
 - [Updating everything at once](#updating-everything-at-once)
 - [Conflicts](#conflicts)
 - [Backups and rollback](#backups-and-rollback)
@@ -36,6 +38,8 @@ bots download is a static file with a published hash.
 ```bash
 php bin/console core:check          # anything new?
 php bin/console core:update         # apply it, or refuse and tell you why
+php bin/console core:adopt          # keep a core change of your own
+php bin/console core:update --reset # or put the release back everywhere
 php bin/console core:rollback       # put it back
 ```
 
@@ -247,7 +251,7 @@ It is what makes "your changes" a knowable thing rather than a guess.
 
 ```bash
 php bin/console core:diff        # what you have changed
-php bin/console core:adopt       # accept the tree as the new baseline
+php bin/console core:adopt       # keep those changes
 ```
 
 If there is no baseline — a bot installed before this existed — local
@@ -258,10 +262,137 @@ There is no record of what was installed, so local changes
 cannot be detected. Run: php bin/console core:adopt
 ```
 
-Run `core:adopt` when you are satisfied the tree is what you want. It
-records what is there now, which means it also adopts any edits you have
-made — that is the point, but it is why it is a separate, deliberate step
-rather than something an update does for you.
+On a tree with no baseline at all, `core:adopt` records everything under
+the core directories as though the core had shipped it. That is lossy by
+nature — an edit made before there was anything to compare against is
+indistinguishable from upstream's own bytes — which is why it happens
+once and never again. After the first `core:update` the record comes from
+the release itself and is exact.
+
+## Adopting a change
+
+Sometimes the answer to "you edited a core file" is not *revert it* and
+not *move it into an extension*. Sometimes the edit is right, it is
+staying, and what you want is for updates to stop arguing about it.
+
+```bash
+php bin/console core:adopt
+```
+
+```
+Adopting 2 changed core file(s):
+
+  o src/Bot/Command/Start.php
+  o src/Bot/Router.php   (you removed this)
+
+Your version of each is recorded, alongside the version the core shipped.
+A future release that does not touch these files will leave them exactly as
+they are. One that does touch them stops and says so, rather than choosing.
+```
+
+**Both halves are recorded**, and that is the whole mechanism:
+
+```
+upstream  the hash the core shipped, at the moment you adopted
+mine      the hash of your version
+```
+
+Keeping only one of those was the old behaviour and it was a trap.
+`core:adopt` used to rewrite the baseline from disk, so your edit became
+what the core had supposedly shipped — everything downstream read as
+clean, and the next release replaced your file without a word. The
+command you ran to protect a change was the reason you lost it.
+
+With upstream kept apart, the next release answers a question instead of
+guessing:
+
+| | |
+| --- | --- |
+| upstream has not touched the file since you adopted | **kept** — your version stays, byte for byte |
+| upstream changed it, or removed it | **refused** — the update stops and names the file |
+
+A kept file is not written, not deleted, and not counted as a change:
+
+```
+core 1.4.0 -> 1.4.1: 12 replaced, 1 kept, 40 unchanged
+
+  o src/Bot/Command/Start.php   (yours)
+  ~ src/Bot/Router.php
+  ...
+```
+
+Deleting a core file counts as a change like any other. Adopt it and no
+update will helpfully put it back; a release that rewrites it still
+stops.
+
+### When a release touches something you adopted
+
+```
+Refusing to update the core: 1 file this release changes is also yours.
+
+  ! src/Bot/Command/Start.php   (you adopted this; the release changes it too)
+
+Your options:
+  core:diff                    see exactly what you changed
+  merge upstream's change into your version, then core:adopt again
+  core:update --force          apply anyway; the originals go to storage/backups/
+  core:update --reset          put this release everywhere, adoptions included
+```
+
+There is no automatic resolution here and there should not be. Upstream
+changed that file for a reason and so did you, and only one of you knows
+whether the two changes are compatible. Merge it by hand, then
+`core:adopt` again — which re-records your new version against the
+release you merged from, and the next update is quiet once more.
+
+Re-running `core:adopt` on its own is not a way out: it re-records the
+same divergence against the same release, and the update refuses again
+for the same reason.
+
+### What adopting does not do
+
+It does not widen what an update may write, and it does not make a file
+yours in the ownership sense — the core still knows it shipped that path,
+so it is still the core's file, with your version in it. A file you
+*added* needs no adopting at all: no update has ever touched a path the
+core does not ship.
+
+## Starting over: `--reset`
+
+```bash
+php bin/console core:update --reset
+php bin/console core:update --reset --version=1.3.1
+php bin/console core:update --reset --dry-run
+```
+
+The way out of every refusal above, and the reason the updater can afford
+to refuse so readily. It re-downloads the release, writes **every file it
+ships**, drops every adoption, and records the tree as being exactly that
+release.
+
+It is not a louder `--force`, and the difference is worth keeping
+straight:
+
+| | `--force` | `--reset` |
+| --- | --- | --- |
+| files this release changes, that you edited | overwritten | overwritten |
+| a file you adopted that this release does *not* change | left alone | overwritten |
+| a file of yours at a path the release introduces | refused | overwritten |
+| adoptions afterwards | kept | all dropped |
+| the baseline afterwards | merged | the release, exactly |
+
+Use `--force` when a specific edit is disposable. Use `--reset` when you
+have stopped being able to account for the tree and want a known one
+back.
+
+Two refusals survive it, because neither is about your work: a package
+that tries to write outside the core surface, and a release this install
+cannot run. A reset is not a way to install a hostile package or an
+impossible one. Everything it overwrites goes to `storage/backups/` first,
+so `core:rollback` still undoes it.
+
+`--reset` is also the one core command that does not need a baseline. It
+is the answer to not having one.
 
 ## Updating everything at once
 
@@ -314,37 +445,51 @@ single-target commands, and are passed to each of them.
 
 ## Conflicts
 
-A conflict is one file that **you edited** and **this release also
-changes**. Applying it would discard your edit, so it does not apply:
+A conflict is one file that is **yours** — edited, or adopted — and that
+**this release also changes**. Applying it would discard your work, so it
+does not apply:
 
 ```
-Refusing to update the core: you have edited 1 file this release also changes.
+Refusing to update the core: 2 files this release changes are also yours.
 
-  ! docs/EXTENSIONS.md
+  ! src/Bot/Command/Start.php   (you adopted this; the release changes it too)
+  ! docs/EXTENSIONS.md   (you edited this)
 
 Your options:
   core:diff                    see exactly what you changed
   revert those files, then core:update
+  merge upstream's change into your version, then core:adopt again
   core:update --force          apply anyway; the originals go to storage/backups/
-
-Custom commands and settings belong in an extension, which no core update touches.
+  core:update --reset          put this release everywhere, adoptions included
 ```
 
 Nothing was written. The whole update is refused, not the conflicting file —
 a partially applied core is worse than an unapplied one, because the version
 number would then describe code that is not there.
 
-Three ways forward:
+Ways forward, roughly in order of how often they are the right one:
 
 - **Revert your edits**, then update. Cleanest, when the edit was a debug
   line you forgot about.
 - **Move the behaviour into an extension**, then revert and update. The
   right answer for anything you want to keep.
+- **[Adopt it](#adopting-a-change)**, if the release does not touch that
+  file. Then this stops happening.
+- **Merge by hand, then `core:adopt` again**, when the release *does*
+  touch a file you adopted. Nothing can do this for you: upstream changed
+  it for a reason and so did you.
 - **`--force`**. Your version goes to `storage/backups/` and upstream's is
-  written. Use it when you know the edit is disposable.
+  written. Use it when you know the edit is disposable. It applies to the
+  files this release changes and nothing else — an adopted file the
+  release leaves alone stays yours even under `--force`.
+- **[`--reset`](#starting-over---reset)**. Upstream wins, everywhere,
+  adoptions included.
 
 If you edited a file this release does *not* touch, there is no conflict and
-the update proceeds — your edit stays exactly as it is.
+the update proceeds — your edit stays exactly as it is, whether or not you
+ever adopted it. Adopting changes what is *reported*, not what is written:
+an unadopted edit to an untouched file was always safe, it was just listed
+next to the ones that were not.
 
 A local edit that happens to match what upstream now ships is not a conflict
 either. There is nothing to lose, so it is treated as already up to date and
@@ -424,8 +569,9 @@ become remote code execution.
 | --- | --- |
 | `core:check [--fresh]` | installed vs what the hub serves, and whether anything is edited |
 | `core:update [--version=] [--dry-run] [--force]` | applies a release, or refuses and says why |
+| `core:update --reset [--version=]` | re-downloads and writes every file the release ships, dropping adoptions |
 | `core:diff [--verbose]` | core files you have changed |
-| `core:adopt` | re-records the files it already owns; adopts everything only on a fresh install |
+| `core:adopt` | keeps your changed core files, recording your version alongside upstreams |
 | `core:backups` | what can be rolled back to |
 | `core:rollback [<backup>]` | restores one; the newest by default |
 | `update:all [--dry-run] [--force]` | checks the hub afresh and applies every outstanding update, extensions first |

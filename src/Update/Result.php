@@ -21,7 +21,18 @@ class Result
         public readonly ?string $migrated = null,
         public readonly bool $enabled = true,
         /** Set when a core update needs composer install run afterwards. */
-        public readonly bool $dependenciesChanged = false
+        public readonly bool $dependenciesChanged = false,
+        /**
+         * Set when this was core:update --reset.
+         *
+         * Worth carrying rather than inferring from the plan: a reset
+         * that happened to have nothing to write is still a reset, and
+         * still dropped every adoption. Reporting it as an ordinary
+         * update would be the one sentence an operator needed to see.
+         */
+        public readonly bool $wasReset = false,
+        /** Adopted files a reset overwrote. */
+        public readonly int $adoptionsDropped = 0
     ) {
     }
 
@@ -33,6 +44,10 @@ class Result
     /** e.g. "Updated Clock 1.2.0 -> 1.3.0" */
     public function headline(): string
     {
+        if ($this->wasReset) {
+            return "Reset {$this->slug} to {$this->to}.";
+        }
+
         if ($this->wasInstall()) {
             return "Installed {$this->slug} {$this->to}.";
         }
@@ -59,6 +74,15 @@ class Result
 
         if ($this->migrated !== null) {
             $lines[] = '  ! its install() reported: ' . $this->migrated;
+        }
+
+        if ($this->wasReset) {
+            $lines[] = '  the baseline is now this release exactly';
+
+            if ($this->adoptionsDropped > 0) {
+                $lines[] = '  ' . $this->adoptionsDropped
+                    . ' adopted file(s) were overwritten; core:adopt again to keep new ones';
+            }
         }
 
         if ($this->dependenciesChanged) {

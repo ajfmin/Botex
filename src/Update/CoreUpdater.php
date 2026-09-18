@@ -51,9 +51,12 @@ class CoreUpdater
     /**
      * Works out what a core update would do.
      *
+     * @param  bool $reset put this release everywhere, adopted files
+     *                     included -- see reset()
+     *
      * @throws UpdateException
      */
-    public function plan(Package $package): Plan
+    public function plan(Package $package, bool $reset = false): Plan
     {
         $plan = new Plan(
             slug: 'core',
@@ -71,7 +74,10 @@ class CoreUpdater
             $plan->problem($problem);
         }
 
-        if (Version::compare($package->version(), $this->installed()) < 0) {
+        // A reset is allowed to go backwards: pinning an exact version is
+        // half of what it is for, and "put this release on disk" is a
+        // coherent thing to ask for whichever direction it points.
+        if (!$reset && Version::compare($package->version(), $this->installed()) < 0) {
             $plan->problem(
                 "this would downgrade the core from {$this->installed()} to {$package->version()}"
             );
@@ -79,7 +85,9 @@ class CoreUpdater
 
         // Without a baseline there is no way to tell an edit from an
         // upstream change, and guessing wrong loses the operator's work.
-        if (!$this->inventory->isUsable()) {
+        // A reset does not ask the question: it is the answer to not
+        // knowing, and it writes the baseline on its way out.
+        if (!$reset && !$this->inventory->isUsable()) {
             $plan->problem(
                 'there is no record of what was installed, so local changes cannot be detected. '
                     . 'Run "core:adopt" to record the current files as your baseline first'
@@ -100,6 +108,28 @@ class CoreUpdater
             $shipped = $package->manifest->files[$path] ?? '';
             $current = Hash::fileOrNull($absolute);
 
+            // An adopted file is answered against the release rather than
+            // against the disk, and the question is only ever: has the
+            // core changed this file since it was adopted?
+            $kept = $reset ? null : $this->inventory->keeping($path);
+
+            if ($kept !== null) {
+                if (!Hash::matches($kept['upstream'], $shipped)) {
+                    // Both have a claim on the file. Nobody but a person
+                    // can decide which survives, so the update stops.
+                    $plan->add(Plan::CONFLICT, $path, 'you adopted this file, and this release changes it');
+                    continue;
+                }
+
+                // Upstream has not touched it, so neither does the update
+                // -- however many times it has been edited since. Writing
+                // this release's copy over it would replace the operator's
+                // version with bytes identical to the ones they diverged
+                // from, which helps nobody.
+                $plan->add(Plan::KEPT, $path, $kept['mine'] === null ? 'you removed this' : 'yours');
+                continue;
+            }
+
             if ($current === null) {
                 $plan->add(Plan::ADD, $path);
                 continue;
@@ -108,8 +138,10 @@ class CoreUpdater
             // On disk, but the core never shipped it: the operator put it
             // there, and this release happens to want the same path. There
             // is no core version of it to fall back to, so the updater
-            // stops rather than choosing which of the two survives.
-            if (!$this->inventory->owns($path)) {
+            // stops rather than choosing which of the two survives --
+            // unless a reset was asked for, which is the operator making
+            // exactly that choice, in writing, with a backup taken.
+            if (!$reset && !$this->inventory->owns($path)) {
                 $plan->add(Plan::COLLISION, $path, 'yours, and new in this release');
                 continue;
             }
@@ -121,7 +153,7 @@ class CoreUpdater
 
             // Edited locally *and* changed upstream: replacing it discards
             // the edit, which is the case that stops the update.
-            if (in_array($path, $dirty, true)) {
+            if (!$reset && in_array($path, $dirty, true)) {
                 $plan->add(Plan::CONFLICT, $path, 'you edited this file');
                 continue;
             }
@@ -154,7 +186,15 @@ class CoreUpdater
                 continue;
             }
 
-            if (in_array($path, $dirty, true)) {
+            // Removing a file is a change to it like any other, so a
+            // release that drops one the operator adopted lands in the
+            // same refusal as one that rewrites it.
+            if (!$reset && $this->inventory->isKept($path)) {
+                $plan->add(Plan::CONFLICT, $path, 'you adopted this file, and this release removes it');
+                continue;
+            }
+
+            if (!$reset && in_array($path, $dirty, true)) {
                 $plan->add(Plan::CONFLICT, $path, 'removed upstream, but you edited it');
                 continue;
             }
@@ -207,6 +247,65 @@ class CoreUpdater
             $deletions,
             $tracked
         ));
+    }
+
+    /**
+     * Re-downloads a release and puts every one of its files on disk.
+     *
+     * The way out of every refusal this class can produce, and the reason
+     * it can afford to refuse so readily. Conflicts, collisions and
+     * adopted files all stop an ordinary update because each of them is a
+     * question only a person can answer; `--reset` is that person
+     * answering "upstream wins, all of it".
+     *
+     * Not the same as `--force`, and the difference is worth keeping
+     * straight. Forcing discards edits to files *this release changes*,
+     * and leaves everything else exactly as it was -- including an adopted
+     * file upstream has not touched. A reset does not care what changed:
+     * it writes the release's own copy of every file it ships, drops every
+     * adoption, and records the tree as being exactly that release. It is
+     * the repair for a tree nobody can account for any more.
+     *
+     * Two refusals still apply, because neither is about the operator's
+     * work: a package writing outside the core surface, and a release this
+     * install cannot run. A reset is not a way to install a hostile
+     * package or an impossible one.
+     *
+     * Everything it overwrites goes to storage/backups/ first, as always.
+     *
+     * @param  string|null $version exact version, or the newest
+     *
+     * @throws UpdateException
+     */
+    public function reset(?string $version = null): Result
+    {
+        $package = $this->downloader->fetch('core', $version);
+        $plan = $this->plan($package, reset: true);
+
+        if ($plan->blocked() !== []) {
+            throw new UpdateException(
+                'Refusing this core package: it tries to write outside the core surface ('
+                    . implode(', ', array_slice($plan->blocked(), 0, 5)) . ').'
+            );
+        }
+
+        if ($plan->problems() !== []) {
+            throw new UpdateException(
+                'Refusing to reset the core: ' . implode('; ', $plan->problems()) . '.'
+            );
+        }
+
+        $released = array_keys($this->inventory->kept());
+
+        $result = $this->apply($package, $plan, force: true, reset: true);
+
+        $this->log->warning('The core was reset', [
+            'to' => $package->version(),
+            'backup' => $result->backup,
+            'adoptions_dropped' => $released,
+        ]);
+
+        return $result;
     }
 
     /**
@@ -270,17 +369,27 @@ class CoreUpdater
      * core half-written. Only once all of it is on disk and verified does
      * anything get moved into place.
      *
+     * @param  bool $reset write the release's own copy of every file it
+     *                     ships, and record the tree as being exactly that
+     *                     release -- see reset()
+     *
      * @throws UpdateException
      */
-    public function apply(Package $package, Plan $plan, bool $force = false): Result
+    public function apply(Package $package, Plan $plan, bool $force = false, bool $reset = false): Result
     {
+        // Counted before anything is written, because the write is what
+        // clears them.
+        $adoptions = $reset ? count($this->inventory->kept()) : 0;
+
         // Re-checked here rather than trusted from update(), because this
         // is the last gate before anything is written and apply() is
         // reachable on its own -- an offline install from a local .botex
         // does not go through update() at all. Not forceable: --force
         // discards *your edit to a core file*, and a path the core never
         // owned has no core version to fall back to, so forcing could only
-        // mean deleting something of yours.
+        // mean deleting something of yours. A reset plan has no collisions
+        // in it at all: they were planned as ordinary replacements,
+        // deliberately, because that is what a reset was asked to do.
         if ($plan->collisions() !== []) {
             throw new UpdateException($this->explainCollisions($plan));
         }
@@ -363,10 +472,19 @@ class CoreUpdater
             // actually on disk. A crash before this leaves a stale record,
             // which reports files as dirty -- noisy, but never a silent
             // overwrite, which is the right way round to fail.
-            $this->inventory->merge(
-                $written + $this->baselineForIdentical($package, $plan, $written),
-                $package->version()
-            );
+            //
+            // A reset records the release's whole file map instead of
+            // merging: every file it ships is now on disk verbatim, so the
+            // manifest *is* the truth about the tree, and saying so in one
+            // write also drops the adoptions the reset just overwrote.
+            if ($reset) {
+                $this->inventory->adopt($package->manifest->files, $package->version());
+            } else {
+                $this->inventory->merge(
+                    $written + $this->baselineForIdentical($package, $plan, $written),
+                    $package->version()
+                );
+            }
 
             if ($removed !== []) {
                 $this->inventory->forget($removed, $package->version());
@@ -420,7 +538,9 @@ class CoreUpdater
             to: $plan->to,
             plan: $plan,
             backup: $label,
-            dependenciesChanged: $dependencies
+            dependenciesChanged: $dependencies,
+            wasReset: $reset,
+            adoptionsDropped: $adoptions
         );
     }
 
@@ -514,34 +634,68 @@ class CoreUpdater
             : Botex::VERSION;
     }
 
-    /** The message a refused update prints. */
+    /**
+     * The message a refused update prints.
+     *
+     * Two kinds of file end up in the same list and they need different
+     * advice, so they are named separately. An edit you forgot about is
+     * usually reverted; a file you adopted on purpose is a decision you
+     * now have to make again, because upstream has moved that file too.
+     */
     private function explainConflicts(Plan $plan): string
     {
         $conflicts = $plan->conflicts();
-        $shown = array_slice($conflicts, 0, 10);
+        $adopted = array_values(array_filter(
+            $conflicts,
+            fn (string $path): bool => $this->inventory->isKept($path)
+        ));
+        $edited = array_values(array_diff($conflicts, $adopted));
 
         $lines = [
-            'Refusing to update the core: you have edited '
-                . count($conflicts) . ' file' . (count($conflicts) === 1 ? '' : 's')
-                . ' this release also changes.',
+            'Refusing to update the core: ' . count($conflicts) . ' file'
+                . (count($conflicts) === 1 ? '' : 's')
+                . ' this release changes '
+                . (count($conflicts) === 1 ? 'is' : 'are') . ' also yours.',
             '',
         ];
 
-        foreach ($shown as $path) {
-            $lines[] = '  ! ' . $path;
+        foreach ([
+            ['adopted', $adopted, 'you adopted this; the release changes it too'],
+            ['edited', $edited, 'you edited this'],
+        ] as [$_, $paths, $why]) {
+            if ($paths === []) {
+                continue;
+            }
+
+            $shown = array_slice($paths, 0, 10);
+
+            foreach ($shown as $path) {
+                $lines[] = '  ! ' . $path . '   (' . $why . ')';
+            }
+
+            if (count($paths) > count($shown)) {
+                $lines[] = '  ... and ' . (count($paths) - count($shown)) . ' more';
+            }
         }
 
-        if (count($conflicts) > count($shown)) {
-            $lines[] = '  ... and ' . (count($conflicts) - count($shown)) . ' more';
+        $options = ['', 'Your options:', '  core:diff                    see exactly what you changed'];
+
+        if ($edited !== []) {
+            $options[] = '  revert those files, then core:update';
+        }
+
+        if ($adopted !== []) {
+            // Re-adopting is not offered as a fix: it would re-record the
+            // same divergence against the same release and refuse again.
+            // Something has to give, and only the operator knows what.
+            $options[] = '  merge upstream\'s change into your version, then core:adopt again';
         }
 
         return implode(PHP_EOL, [
             ...$lines,
-            '',
-            'Your options:',
-            '  core:diff                    see exactly what you changed',
-            '  revert those files, then core:update',
+            ...$options,
             '  core:update --force          apply anyway; the originals go to storage/backups/',
+            '  core:update --reset          put this release everywhere, adoptions included',
             '',
             'A file you added yourself is never in this list: the core only owns what it shipped.',
         ]);
@@ -577,6 +731,9 @@ class CoreUpdater
             'Rename or move the custom file before updating.',
             'Nothing has been written, and --force does not apply: the core has no version of',
             'this file to restore, so forcing could only mean deleting yours.',
+            '',
+            'core:update --reset does overwrite it, after backing it up. That is the one',
+            'way to say "upstream wins" about a file the core never shipped.',
         ]);
     }
 

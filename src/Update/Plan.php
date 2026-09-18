@@ -17,6 +17,17 @@ class Plan
     public const IDENTICAL = 'identical';
     public const DELETE = 'delete';
     public const CONFLICT = 'conflict';
+
+    /**
+     * A file the operator adopted, left exactly as it is.
+     *
+     * Not a conflict and not a change: this release ships the same
+     * bytes for it that the adopted-against release did, so upstream
+     * has no opinion about it and the update has no reason to write it.
+     * Reported all the same, because "your version survived" is the
+     * thing an operator adopted a file in order to be told.
+     */
+    public const KEPT = 'kept';
     public const BLOCKED = 'blocked';
 
     /**
@@ -149,6 +160,7 @@ class Plan
             self::REPLACE => ['%d replaced', '%d replaced'],
             self::DELETE => ['%d deleted', '%d deleted'],
             self::IDENTICAL => ['%d unchanged', '%d unchanged'],
+            self::KEPT => ['%d kept', '%d kept'],
             self::CONFLICT => ['%d conflict', '%d conflicts'],
             self::COLLISION => ['%d collision', '%d collisions'],
             self::BLOCKED => ['%d blocked', '%d blocked'],
@@ -183,6 +195,7 @@ class Plan
             self::ADD => '+',
             self::REPLACE => '~',
             self::DELETE => '-',
+            self::KEPT => 'o',
             self::IDENTICAL => '=',
         ];
 
@@ -195,6 +208,9 @@ class Plan
             self::ADD => 10,
             self::REPLACE => 10,
             self::DELETE => 10,
+            // Never truncated: each one is a decision the operator made,
+            // and confirming it held is the point of listing them.
+            self::KEPT => PHP_INT_MAX,
             self::IDENTICAL => 0,
         ];
 

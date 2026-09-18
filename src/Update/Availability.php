@@ -98,6 +98,19 @@ class Availability
         return $this->inventory->isUsable() ? $this->inventory->dirty() : [];
     }
 
+    /**
+     * Core files kept as the operators own, by core:adopt.
+     *
+     * Not conflicts, and shown apart from them: a release that leaves
+     * these alone applies normally. They are worth naming all the same,
+     * because they are the reason an update can refuse over a file that
+     * is not in the edited list.
+     */
+    public function adopted(): array
+    {
+        return $this->inventory->isUsable() ? $this->inventory->adopted() : [];
+    }
+
     /** Whether a baseline exists to measure local changes against. */
     public function baselined(): bool
     {

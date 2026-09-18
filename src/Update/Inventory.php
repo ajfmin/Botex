@@ -179,28 +179,66 @@ class Inventory
     /**
      * Core files the operator has edited, added or deleted.
      *
-     * @return array{changed:array<string>,added:array<string>,removed:array<string>}
+     * Adopted changes are pulled out into their own bucket rather than
+     * counted as drift. They are still a difference from what the core
+     * shipped -- that is what they are -- but they are a difference
+     * somebody decided on, and reporting them next to a forgotten debug
+     * line teaches an operator to ignore the whole list.
+     *
+     * A file adopted and then edited *again* is back in `changed`: what
+     * was blessed was one version of it, not the path.
+     *
+     * @return array{changed:array<string>,added:array<string>,removed:array<string>,adopted:array<string>}
      */
     public function drift(): array
     {
         $diff = Hash::diff($this->hashes(), $this->current());
+        $adopted = [];
+
+        $sift = function (array $paths) use (&$adopted): array {
+            $rest = [];
+
+            foreach ($paths as $path) {
+                if ($this->keptIntact($path)) {
+                    $adopted[] = $path;
+                    continue;
+                }
+
+                $rest[] = $path;
+            }
+
+            return $rest;
+        };
+
+        $changed = $sift($diff['changed']);
+        $removed = $sift($diff['removed']);
+
+        sort($adopted);
 
         return [
-            'changed' => $diff['changed'],
+            'changed' => $changed,
             // An added file is not a conflict on its own -- a core update
             // will not touch a path it does not ship -- but it is reported
             // so `core:diff` shows the whole picture.
             'added' => $diff['added'],
-            'removed' => $diff['removed'],
+            'removed' => $removed,
+            'adopted' => $adopted,
         ];
     }
 
     /**
-     * Tracked files that differ from what was installed.
+     * Tracked files that differ from what was installed and were not
+     * adopted.
      *
      * These are what `core:update` refuses over, since replacing one would
      * discard an edit. A deleted file counts: the operator removed it
      * deliberately and putting it back is also a surprise.
+     *
+     * An adopted file is deliberately absent. It is not that the update
+     * may overwrite it -- quite the opposite, it is left alone entirely --
+     * but the refusal it would otherwise trigger belongs to a different
+     * question, which the planner asks against the release: did upstream
+     * change this file too? See Botex\Update\CoreUpdater.
      *
      * @return array<string>
      */
@@ -212,6 +250,12 @@ class Inventory
         sort($dirty);
 
         return $dirty;
+    }
+
+    /** Adopted files still at the version that was adopted. */
+    public function adopted(): array
+    {
+        return $this->drift()['adopted'];
     }
 
     public function isClean(): bool
@@ -274,7 +318,178 @@ class Inventory
     }
 
     /**
+     * The operator's own versions of core files, blessed by `core:adopt`.
+     *
+     * The entry that makes "update without resetting my changes" work for
+     * a change you mean to keep. Each one holds both halves:
+     *
+     *   upstream  the hash the core shipped, at the moment of adopting
+     *   mine      the hash of the operator's version
+     *
+     * Both are needed, and keeping only one is the bug this replaced.
+     * `core:adopt` used to rewrite the baseline from disk, which made an
+     * edit look like what the core had shipped -- so the *next* release
+     * quietly overwrote it, which is the opposite of what adopting a
+     * change should mean.
+     *
+     * With upstream kept apart, a later release answers a question rather
+     * than guessing: has the core changed this file since you adopted it?
+     * No, and your version stays untouched. Yes, and the update refuses,
+     * because upstream's change and yours both have a claim on that file
+     * and only a person can decide between them.
+     *
+     * A null `mine` records a file the operator deleted on purpose, so an
+     * update does not helpfully put it back.
+     *
+     * @return array<string, array{upstream:string, mine:string|null}>
+     */
+    public function kept(): array
+    {
+        $kept = $this->read()['kept'] ?? [];
+
+        if (!is_array($kept)) {
+            return [];
+        }
+
+        $entries = [];
+
+        foreach ($kept as $path => $entry) {
+            if (!is_array($entry) || !isset($entry['upstream'])) {
+                continue;
+            }
+
+            $mine = $entry['mine'] ?? null;
+
+            $entries[(string) $path] = [
+                'upstream' => (string) $entry['upstream'],
+                'mine' => $mine === null ? null : (string) $mine,
+            ];
+        }
+
+        ksort($entries);
+
+        return $entries;
+    }
+
+    /** @return array{upstream:string, mine:string|null}|null */
+    public function keeping(string $path): ?array
+    {
+        return $this->kept()[self::normalize($path)] ?? null;
+    }
+
+    public function isKept(string $path): bool
+    {
+        return $this->keeping($path) !== null;
+    }
+
+    /**
+     * Blesses the operator's current version of these paths.
+     *
+     * Only ever called for a path the core owns: a file the core never
+     * shipped has no upstream half to record, and needs none -- an update
+     * already leaves it alone.
+     *
+     * Re-adopting a path that is already kept refreshes `mine` and leaves
+     * `upstream` exactly as it was. That is the whole point: upstream is
+     * the fixed reference the next release is compared against, and
+     * moving it to whatever is on disk would put us back where we
+     * started.
+     *
+     * @param  array<string> $paths
+     * @return int           paths now kept
+     */
+    public function keep(array $paths): int
+    {
+        $kept = $this->kept();
+        $shipped = $this->hashes();
+        $current = $this->current();
+
+        foreach ($paths as $path) {
+            $path = self::normalize((string) $path);
+
+            if (!isset($shipped[$path]) || !self::isTracked($path)) {
+                continue;
+            }
+
+            $kept[$path] = [
+                'upstream' => $kept[$path]['upstream'] ?? $shipped[$path],
+                // Absent from disk means the operator deleted it, which is
+                // a change worth keeping like any other.
+                'mine' => $current[$path] ?? null,
+            ];
+        }
+
+        ksort($kept);
+
+        $this->write(['kept' => $kept, 'recorded_at' => gmdate('c')]);
+
+        return count($kept);
+    }
+
+    /**
+     * Drops adoptions, so those paths go back to being ordinary core
+     * files an update may replace.
+     *
+     * @param  array<string>|null $paths null for all of them
+     * @return int                how many were dropped
+     */
+    public function release(?array $paths = null): int
+    {
+        $kept = $this->kept();
+
+        if ($paths === null) {
+            $this->write(['kept' => [], 'recorded_at' => gmdate('c')]);
+
+            return count($kept);
+        }
+
+        $dropped = 0;
+
+        foreach ($paths as $path) {
+            $path = self::normalize((string) $path);
+
+            if (isset($kept[$path])) {
+                unset($kept[$path]);
+                $dropped++;
+            }
+        }
+
+        if ($dropped > 0) {
+            $this->write(['kept' => $kept, 'recorded_at' => gmdate('c')]);
+        }
+
+        return $dropped;
+    }
+
+    /**
+     * Whether a kept file is still the version that was adopted.
+     *
+     * False once it has been edited again, which makes it dirty like any
+     * other change: adopting blesses a specific version, not a licence
+     * for the path.
+     */
+    public function keptIntact(string $path): bool
+    {
+        $entry = $this->keeping($path);
+
+        if ($entry === null) {
+            return false;
+        }
+
+        $now = Hash::fileOrNull($this->absolute($path));
+
+        return $entry['mine'] === null
+            ? $now === null
+            : $now !== null && Hash::matches($entry['mine'], $now);
+    }
+
+    /**
      * Records the tree as the baseline.
+     *
+     * An adopted path keeps the upstream hash it already had. Re-reading
+     * it from disk would record the operator's own version as the thing
+     * the core shipped, which is precisely the mistake that made adopting
+     * a change lose it at the next release.
      *
      * @param  string|null        $version the core version now on disk
      * @param  array<string>|null $only    record just these paths -- the
@@ -289,10 +504,20 @@ class Inventory
 
         if ($only !== null) {
             $hashes = array_intersect_key($hashes, array_flip(array_map(
-                static fn (string $path): string => str_replace('\\', '/', $path),
+                static fn (string $path): string => self::normalize($path),
                 $only
             )));
         }
+
+        $shipped = $this->hashes();
+
+        foreach (array_keys($this->kept()) as $path) {
+            if (isset($shipped[$path])) {
+                $hashes[$path] = $shipped[$path];
+            }
+        }
+
+        ksort($hashes);
 
         $this->write([
             'version' => $version ?? Botex::VERSION,
@@ -317,6 +542,11 @@ class Inventory
      * Cheaper than record() -- no rehashing of the tree -- and exact: what
      * is stored is what the package said it wrote.
      *
+     * Every adoption goes with it. This says "the tree is now exactly this
+     * release", which is only ever true after a reset, and an adoption
+     * that outlived the divergence it described would refuse the next
+     * update over a difference that is no longer there.
+     *
      * @param array<string,string> $hashes path => sha256
      */
     public function adopt(array $hashes, string $version): void
@@ -329,6 +559,7 @@ class Inventory
             // Exact by construction: these hashes came from a
             // package, so they are that release and nothing else.
             'scoped' => true,
+            'kept' => [],
             'tree' => Hash::tree($hashes),
             'files' => $hashes,
         ]);
@@ -396,8 +627,21 @@ class Inventory
     }
 
     /** @param array<string,mixed> $data */
+    /**
+     * Writes the record, carrying forward anything the caller did not
+     * mention.
+     *
+     * Merged rather than replaced, because several of these writers are
+     * partial by design -- merge() names only the files that moved, keep()
+     * only the adoptions -- and a whole-file replace silently dropped the
+     * keys they left out. That is how `scoped` used to disappear at the
+     * first update after it was set, which turned off deletions for good;
+     * adoptions would have gone the same way.
+     */
     private function write(array $data): void
     {
+        $data = array_replace($this->read(), $data);
+
         $directory = dirname($this->file);
 
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
@@ -431,6 +675,12 @@ class Inventory
         }
 
         $this->data = $data;
+    }
+
+    /** Paths are compared as written in a manifest: forward slashes. */
+    private static function normalize(string $path): string
+    {
+        return str_replace('\\', '/', $path);
     }
 
     /** Absolute path for a tracked relative path. */

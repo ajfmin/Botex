@@ -125,12 +125,16 @@ php bin/console update:all           # check the hub and apply everything outsta
 php bin/console core:check           # what is available, what you have edited
 php bin/console core:update --dry-run
 php bin/console core:update
+php bin/console core:adopt           # keep a core change of your own
+php bin/console core:update --reset  # or put the release back, everywhere
 php bin/console core:rollback        # if you change your mind
 ```
 
-An update takes a backup first, refuses rather than overwriting your edits,
-and refuses outright a package that would write outside the core or delete
-most of it. Details in [docs/UPDATING.md](docs/UPDATING.md).
+An update takes a backup first and refuses rather than overwriting your edits.
+A change you deliberately adopted is kept byte for byte, and the update stops
+only if the release touches that same file. A package that would write outside
+the core, or delete most of it, is refused outright and no flag changes that.
+Details in [docs/UPDATING.md](docs/UPDATING.md).
 
 ## Documentation
 
