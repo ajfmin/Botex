@@ -121,6 +121,7 @@ try {
     require __DIR__ . '/selftest.d/topup.php';
     require __DIR__ . '/selftest.d/broadcast.php';
     require __DIR__ . '/selftest.d/batch.php';
+    require __DIR__ . '/selftest.d/service.php';
 } finally {
     cleanup($temp);
 }

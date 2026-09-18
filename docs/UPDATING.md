@@ -521,7 +521,12 @@ update cannot delete the thing that would undo it. Old ones are pruned; the
 most recent are kept.
 
 Restart the job worker after any core update or rollback, or it keeps
-running the code it loaded at start.
+running the code it loaded at start. Under systemd that is one command,
+and the update prints it when a unit is installed:
+
+```bash
+php bin/console jobs:service --restart
+```
 
 ## What updates refuse to do
 

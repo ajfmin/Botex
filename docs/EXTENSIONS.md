@@ -2036,8 +2036,79 @@ php bin/console jobs:worker --release     # force-release a dead lease
 instead of needing a stale file cleaned up. A second `jobs:work` exits
 immediately.
 
-Under a supervisor, `--seconds=N` plus automatic restart is the robust
-shape: bounded process lifetime, no lease to babysit.
+### 15.8 Under systemd
+
+On Linux, hand the worker to systemd instead of running it in a terminal:
+
+```
+php bin/console jobs:work --run-service    # install the unit and start it
+```
+
+```
+php bin/console jobs:service               # unit state, and who holds the lease
+php bin/console jobs:service --restart     # after a core update
+php bin/console jobs:service --stop
+php bin/console jobs:service --start
+php bin/console jobs:service --install     # rewrite the unit, e.g. after a PHP upgrade
+php bin/console jobs:service --remove
+php bin/console jobs:service --logs        # journalctl for this unit
+php bin/console jobs:service --print       # the unit file, written nowhere
+```
+
+**The unit name is derived from the install path**, and that is the whole
+"one service" guarantee:
+
+```
+botex-<directory name>-<8 hex of the real path>
+botex-shop-3f9a1c22.service
+```
+
+The same install produces the same name from any shell and any user, so
+installing twice replaces one unit rather than accumulating two that both
+run the same worker. Two bots on one box get two units because their
+paths differ — including `/srv/bot1/botex` and `/srv/bot2/botex`, where
+only the hash separates them. Nothing is stored: a remembered name could
+drift from the thing it names.
+
+The one case a derived name cannot cover by itself is a **move**: rename
+the directory and the name changes with it, leaving the old unit enabled
+and pointing somewhere that no longer exists. So `--install` looks for
+other `botex-*.service` units whose `WorkingDirectory` is this install,
+and stops, disables and deletes them first. A unit belonging to a
+different install is never touched.
+
+Two mechanisms, deliberately, because they cover different failures:
+
+| | Stops |
+| --- | --- |
+| one unit per install | a second *service* for the same bot |
+| the `job_worker` lease | a second *worker* however it was started |
+
+Neither is redundant. systemd cannot see a `jobs:work` somebody left in a
+screen session; the lease cannot stop two units from fighting over
+restarts. Running `jobs:work` by hand while the service is up is refused
+with the commands you probably wanted instead — `--force` runs it anyway,
+and the lease then decides which one works.
+
+**Scope follows the user.** Run as root and it is a system unit in
+`/etc/systemd/system`, enabled on boot. Run as anyone else and it is a
+user unit in `~/.config/systemd/user`, which stops when you log out
+unless lingering is on — the command says so, with the
+`loginctl enable-linger` line to fix it. Nothing here escalates
+privileges on its own.
+
+`ExecStart` names the interpreter that installed it (`PHP_BINARY`), not
+`/usr/bin/php`, which matters on a host with several PHP versions.
+`Restart=always` with a ten second delay covers a database blip or a lost
+lease; `KillSignal=SIGTERM` with a 30 second timeout lets the worker
+finish the job in hand, which it already handles.
+
+On a host with no systemd — shared hosting, a container, macOS — every
+command says so in one sentence and writes nothing. `--print` still works
+there, so the unit can be taken and installed by hand.
+
+Without a service, `--seconds=N` plus a supervisor that restarts it is
+the robust shape: bounded process lifetime, no lease to babysit.
 
 | Config key | Env | Default | Meaning |
 | --- | --- | --- | --- |
@@ -2053,7 +2124,7 @@ job looks abandoned and gets picked up again. Alternatively call
 Other job commands: `jobs:list`, `jobs:registered`, `jobs:schedule`,
 `jobs:run <id>`, `jobs:pause <id>`, `jobs:resume <id>`, `jobs:cancel <id>`.
 
-### 15.8 Sending a message from a job
+### 15.9 Sending a message from a job
 
 There is no `Update`, so there is nothing to derive a chat from. `Bot` is
 registered in `bootstrap/app.php` precisely so the worker has it:
@@ -2627,6 +2698,9 @@ spend it. `amount` is in minor units.
 | `jobs:pause <id>` / `jobs:resume <id>` | stop and restart without losing it |
 | `jobs:cancel <id>` | removes it permanently |
 | `jobs:worker [--release]` | who holds the lease; `--release` frees a dead one |
+| `jobs:work --run-service` | install the systemd unit for this install and start it |
+| `jobs:service --start / --stop / --restart` | control it; no flag prints the unit state and the lease holder |
+| `jobs:service --install / --remove / --logs / --print` | rewrite the unit, take it away, read its journal, or just show it |
 
 `jobs:schedule` goes through the same allowlist as your code, so an unknown
 name is rejected rather than instantiated. Use it to test a job without

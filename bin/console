@@ -60,6 +60,9 @@
  *   php bin/console jobs:resume <id>
  *   php bin/console jobs:cancel <id>
  *   php bin/console jobs:worker [--release]
+ *   php bin/console jobs:work --run-service          install + start the service
+ *   php bin/console jobs:service [--start] [--stop] [--restart]
+ *                               [--install] [--remove] [--logs] [--print]
  */
 
 use Botex\Archive\Version;
@@ -191,6 +194,26 @@ function printResult(Result $result): void
     echo implode(PHP_EOL, $result->lines()) . PHP_EOL;
 }
 
+/**
+ * Tells the operator to restart the worker, and how, for their setup.
+ *
+ * The worker loaded the old classes at start and keeps running them, so
+ * every core update ends with this. Naming the command only when a unit
+ * is actually installed matters: `jobs:service --restart` on a bot with
+ * no service would install one, which is not what "restart the worker"
+ * asked for.
+ */
+function printRestartHint(\Botex\Bot\Feeder $feeder): void
+{
+    echo PHP_EOL . 'Restart the job worker so it runs the new code.' . PHP_EOL;
+
+    $service = $feeder->make(\Botex\Bot\Job\SystemdService::class);
+
+    if ($service->unsupported() === null && $service->isInstalled()) {
+        echo '  php bin/console jobs:service --restart' . PHP_EOL;
+    }
+}
+
 /** One table row per remote package. */
 function printListing(Listing $listing, string $installed = ''): void
 {
@@ -203,6 +226,111 @@ function printListing(Listing $listing, string $installed = ''): void
             : ($listing->isNewerThan($installed) ? $installed . ' !' : $installed),
         $listing->short(46)
     );
+}
+
+/**
+ * Brings the worker service up, installing it first if it is not there.
+ *
+ * One function behind --run-service, --install, --start and --restart,
+ * because they differ only in whether an already-running unit is left
+ * alone or bounced. Installing when the unit is missing is not a
+ * convenience: the alternative is "unit not found" from a flag whose
+ * whole purpose is to start the thing.
+ *
+ * @return array<string> what was done, for printing
+ */
+function serviceUp(
+    \Botex\Bot\Job\SystemdService $service,
+    bool $restart = false,
+    bool $reinstall = false
+): array {
+    // --install always rewrites the unit, rather than skipping a unit that
+    // is merely present. A unit written before a PHP upgrade names an
+    // interpreter that has moved, and "already installed" would be a
+    // truthful answer to the wrong question.
+    $steps = $reinstall || !$service->isInstalled() ? $service->install() : [];
+
+    if ($restart || !$service->isActive()) {
+        // restart rather than start when it is already up: that is what
+        // makes --restart pick up new code after a core update, which is
+        // the reason an operator reaches for it.
+        $restart && $service->isActive() ? $service->restart() : $service->start();
+
+        $steps[] = ($restart ? 'restarted ' : 'started ') . $service->unitName();
+
+        return $steps;
+    }
+
+    $steps[] = $service->unitName() . ' is already running';
+
+    return $steps;
+}
+
+/**
+ * Who holds the worker lease, under the unit that is meant to.
+ *
+ * The other half of the one-worker promise, and the half a unit file
+ * cannot make: systemd knows about the worker it started and nothing
+ * about one an operator left running in a screen session. The lease
+ * knows about both.
+ *
+ * Needs the database, which a bot being put under supervision may well
+ * not have yet, so it is reported as unknown rather than failing the
+ * command it is a footnote to.
+ */
+function printWorker(\Botex\Bot\Feeder $feeder): void
+{
+    try {
+        echo 'Worker:    ' . $feeder->make(WorkerLease::class)->describe() . PHP_EOL;
+    } catch (\Throwable $e) {
+        // Truncated: a PDO failure carries the whole query, and this
+        // is a footnote, not the answer.
+        echo 'Worker:    unknown - ' . mb_substr($e->getMessage(), 0, 80) . PHP_EOL;
+    }
+}
+
+/** The service as a block an operator can read at a glance. */
+function printService(\Botex\Bot\Job\SystemdService $service): void
+{
+    $status = $service->status();
+
+    echo 'Unit:      ' . $status['unit'] . ' (' . $status['scope'] . ' scope)' . PHP_EOL;
+    echo 'Install:   ' . $service->describe() . PHP_EOL;
+
+    if (!$status['supported']) {
+        echo 'Service:   not available here' . PHP_EOL . PHP_EOL;
+        echo '  ' . $status['reason'] . PHP_EOL . PHP_EOL;
+        echo 'Run the worker by hand instead: php bin/console jobs:work' . PHP_EOL;
+
+        return;
+    }
+
+    echo 'File:      ' . $status['path'] . ($status['installed'] ? '' : '   (not installed)') . PHP_EOL;
+    echo 'State:     ' . $status['state']
+        . ($status['enabled'] ? ', starts on boot' : ', not enabled on boot') . PHP_EOL;
+
+    // Two units for one install is exactly what the derived name exists
+    // to prevent, so finding one is worth interrupting for.
+    if ($status['strays'] !== []) {
+        echo PHP_EOL . '  ! ' . count($status['strays'])
+            . ' other unit(s) point at this install: ' . implode(', ', $status['strays']) . PHP_EOL;
+        echo '    php bin/console jobs:service --install removes them.' . PHP_EOL;
+    }
+
+    if (!$status['installed']) {
+        echo PHP_EOL . 'Install and start it with:' . PHP_EOL;
+        echo '  php bin/console jobs:work --run-service' . PHP_EOL;
+
+        return;
+    }
+
+    $hint = $service->lingerHint();
+
+    if ($hint !== null) {
+        echo PHP_EOL . '  ' . $hint . PHP_EOL;
+    }
+
+    echo PHP_EOL . 'Logs: php bin/console jobs:service --logs' . PHP_EOL;
 }
 
 /**
@@ -717,7 +845,7 @@ try {
 
             printResult($result);
 
-            echo PHP_EOL . 'Restart the job worker so it runs the new code.' . PHP_EOL;
+            printRestartHint($feeder);
 
             if ($result->dependenciesChanged) {
                 echo 'Then run: composer install' . PHP_EOL;
@@ -785,7 +913,7 @@ try {
             }
 
             if ($coreStep?->state === \Botex\Update\Step::UPDATED) {
-                echo PHP_EOL . 'Restart the job worker so it runs the new code.' . PHP_EOL;
+                printRestartHint($feeder);
 
                 if ($coreStep->result?->dependenciesChanged) {
                     echo 'Then run: composer install' . PHP_EOL;
@@ -976,7 +1104,9 @@ try {
                 echo '  ... and ' . (count($restored) - 15) . ' more' . PHP_EOL;
             }
 
-            echo PHP_EOL . 'Restart the job worker. If composer.json was among these, run composer install.' . PHP_EOL;
+            printRestartHint($feeder);
+
+            echo 'If composer.json was among these, run composer install.' . PHP_EOL;
             break;
 
         case 'version':
@@ -1052,6 +1182,30 @@ try {
                 if ($inventory->adopted() !== []) {
                     echo '  ok ' . count($inventory->adopted())
                         . ' adopted core file(s); a release that changes one will stop.' . PHP_EOL;
+                }
+            }
+
+            // Supervision. Not a problem when it is absent -- plenty of
+            // hosts have no systemd and plenty of operators supervise the
+            // worker themselves -- but a unit that is installed and not
+            // running is a bot whose jobs stopped without anybody being
+            // told.
+            $service = $feeder->make(\Botex\Bot\Job\SystemdService::class);
+
+            if ($service->unsupported() === null) {
+                if (!$service->isInstalled()) {
+                    echo '  - the worker is not a service; php bin/console jobs:work --run-service' . PHP_EOL;
+                } elseif ($service->isActive()) {
+                    echo '  ok ' . $service->unitName() . ' is running.' . PHP_EOL;
+                } else {
+                    echo '  ! ' . $service->unitName() . ' is installed but not running;'
+                        . ' php bin/console jobs:service --start' . PHP_EOL;
+                    $problems++;
+                }
+
+                foreach ($service->strays() as $stray) {
+                    echo '  ! ' . $stray . ' also points at this install; jobs:service --install clears it.' . PHP_EOL;
+                    $problems++;
                 }
             }
 
@@ -1342,6 +1496,36 @@ try {
         // The one long-running process. Everything else here just writes
         // rows for it to pick up.
         case 'jobs:work':
+            // Hand the worker to systemd and come back, rather than
+            // running the loop in this shell. Handled before anything
+            // touches the database, so a bot whose database is the
+            // problem can still be put under supervision.
+            $service = $feeder->make(\Botex\Bot\Job\SystemdService::class);
+
+            if (in_array('--run-service', $argv, true)) {
+                foreach (serviceUp($service, in_array('--restart', $argv, true)) as $step) {
+                    echo '  ' . $step . PHP_EOL;
+                }
+
+                echo PHP_EOL;
+                printService($service);
+                break;
+            }
+
+            // Refuse to start a second worker by hand while the service
+            // is running one. The database lease already stops the two
+            // from both working -- this one would take it, fail, and exit
+            // -- but "Another worker holds the lease" is a confusing way
+            // to be told that the thing you asked for is already running.
+            if (!$force && $service->unsupported() === null && $service->isActive()) {
+                echo 'The worker is already running as ' . $service->unitName() . '.' . PHP_EOL . PHP_EOL;
+                echo '  php bin/console jobs:service --restart   pick up new code' . PHP_EOL;
+                echo '  php bin/console jobs:service --logs      see what it is doing' . PHP_EOL;
+                echo '  php bin/console jobs:service --stop      stop it' . PHP_EOL . PHP_EOL;
+                echo 'Add --force to run a second one here anyway; only one will hold the lease.' . PHP_EOL;
+                break;
+            }
+
             $worker = $feeder->make(Worker::class);
             $worker->onLog(function (string $line) {
                 echo '[' . date('H:i:s') . '] ' . $line . PHP_EOL;
@@ -1497,6 +1681,68 @@ try {
             echo "Cancelled job #{$id}." . PHP_EOL;
             break;
 
+        // Supervision. The worker is the one process a bot has to keep
+        // alive, and leaving that to nohup or a cron line is how an
+        // install ends up running its scheduler twice.
+        case 'jobs:service':
+            $service = $feeder->make(\Botex\Bot\Job\SystemdService::class);
+
+            if (in_array('--print', $argv, true)) {
+                // For an operator who would rather install it themselves,
+                // or who has no systemd at all and wants the ExecStart
+                // line for something else.
+                echo $service->unitContents();
+                break;
+            }
+
+            if (in_array('--remove', $argv, true)) {
+                foreach ($service->remove() as $step) {
+                    echo '  ' . $step . PHP_EOL;
+                }
+
+                echo PHP_EOL . 'The worker is no longer supervised. Start it by hand with:' . PHP_EOL;
+                echo '  php bin/console jobs:work' . PHP_EOL;
+                break;
+            }
+
+            if (in_array('--logs', $argv, true)) {
+                $logs = trim($service->logs((int) (flagValue($argv, 'lines') ?? 40)));
+
+                echo $logs === '' ? 'No journal entries for this unit.' . PHP_EOL : $logs . PHP_EOL;
+                break;
+            }
+
+            // Install is implied by every verb that needs a unit to act
+            // on, so --start on a fresh install does the obvious thing
+            // instead of failing with "unit not found".
+            $wants = [
+                'install' => in_array('--install', $argv, true),
+                'start' => in_array('--start', $argv, true),
+                'stop' => in_array('--stop', $argv, true),
+                'restart' => in_array('--restart', $argv, true),
+            ];
+
+            if ($wants['stop']) {
+                $service->stop();
+                echo 'Stopped ' . $service->unitName() . '.' . PHP_EOL . PHP_EOL;
+                printService($service);
+                break;
+            }
+
+            if ($wants['install'] || $wants['start'] || $wants['restart']) {
+                foreach (serviceUp($service, $wants['restart'], $wants['install']) as $step) {
+                    echo '  ' . $step . PHP_EOL;
+                }
+
+                echo PHP_EOL;
+                printService($service);
+                break;
+            }
+
+            printService($service);
+            printWorker($feeder);
+            break;
+
         case 'jobs:worker':
             $lease = $feeder->make(WorkerLease::class);
 
@@ -1525,6 +1771,11 @@ try {
 } catch (NotFound $e) {
     // The archive simply does not have it. An ordinary answer, so it is not
     // logged at error level and does not page anybody.
+    fail($e->getMessage());
+} catch (\Botex\Bot\Job\ServiceException $e) {
+    // systemd refused, or this host has none. Always something the
+    // operator can act on, and its own words are already in the
+    // message, so it is printed rather than wrapped.
     fail($e->getMessage());
 } catch (RemoteException | \Botex\Update\UpdateException | \Botex\Archive\ArchiveException $e) {
     // A refused update, an unreachable archive, a package that failed

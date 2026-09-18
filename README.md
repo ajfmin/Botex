@@ -90,6 +90,18 @@ use jobs:
 php bin/console jobs:work
 ```
 
+On Linux, hand it to systemd instead and it survives a reboot:
+
+```bash
+php bin/console jobs:work --run-service   # install the unit and start it
+php bin/console jobs:service             # state, and who holds the lease
+php bin/console jobs:service --restart   # after a core update
+```
+
+The unit name is derived from the install path, so one bot gets one
+service however many times you install it, and two bots on one box never
+share one.
+
 ## Using an archive
 
 Set it in `config/config.php` — not `.env`, because which archive you trust
