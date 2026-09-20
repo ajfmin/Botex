@@ -62,16 +62,27 @@ class Router
             return;
         }
 
-        $command = $this->matchCommand($text);
-
-        // A reply-keyboard label bound to a Run action, but only where no
-        // command claims that label. Asked here rather than earlier so a
-        // core button can never be shadowed by a stored binding.
-        if ($command === Command\Unknown::class && $this->actions->handleText($update)) {
+        // A reply-keyboard label bound to a Run action.
+        //
+        // A slash command still wins, which is the invariant that
+        // actually matters: typing /wallet must reach /wallet whatever
+        // keyboard happens to be up. But a *label* is only meaningful
+        // because some keyboard is showing it, and the binding is the
+        // one thing that knows which keyboard that is -- it is scoped to
+        // this telegram id and dropped the moment the keyboard goes
+        // away.
+        //
+        // This used to be asked only when no command claimed the label,
+        // which quietly broke every word two features both want. The
+        // admin panel's Wallet section and the customer's Wallet button
+        // are both labelled "Wallet", so an admin tapping their own
+        // panel got the customer's read-only balance -- no Credit, no
+        // Debit, and nothing anywhere saying why.
+        if (!$this->isCommand($text) && $this->actions->handleText($update)) {
             return;
         }
 
-        $this->dispatcher->dispatch($command, $update);
+        $this->dispatcher->dispatch($this->matchCommand($text), $update);
     }
 
     public function handleCallback(Update $update): void
