@@ -996,6 +996,52 @@ serialized payload, or user text in it. Two supported shapes:
 
 Do not reserve prefixes core owns: `admin:`, `run:`, `flow:`, `step:`.
 
+### 9.3 Saying "working on it": `Botex\Bot\Loading`
+
+`answerCallback()` stops the spinner on the button; it does not say that
+anything is happening, and it leaves the keyboard pressable. For a press
+that goes out to somebody else's host or moves money, that is not
+enough — the honest failure mode is a customer who sees nothing change
+and presses Pay again.
+
+Inject `Botex\Bot\Loading` and put a placeholder on the screen first. It
+edits the pressed message down to one line, `Loading::TEXT`, **and
+removes its keyboard**; whatever you draw afterwards replaces it. Every
+core screen helper (`Panel::show()`, an extension's own `render()`)
+already edits in place on a callback, so the redraw you were doing
+anyway is what retires the placeholder.
+
+```php
+public function handle(Update $update): void
+{
+    $this->loading->show($update);       // "loading ... ⏳", no buttons
+
+    $result = $this->slowThing();        // panel call, wallet, whatever
+
+    $this->section->home($update, $result);   // edits over the placeholder
+}
+```
+
+| Method | Use |
+| --- | --- |
+| `show(Update $update): bool` | replace the pressed message; `false` when there was nothing of ours to replace |
+| `done(Update $update, string $text, array $keyboard = [])` | retire the placeholder yourself, for a handler that draws no screen |
+| `post(int\|string $chatId): ?int` | post a placeholder where there is no pressed message — a flow's `complete()` |
+| `finish(int\|string $chatId, ?int $messageId, string $text, array $keyboard = [])` | write the outcome over it, or send it when `$messageId` is null |
+
+Put it on presses that **change something** — a panel call, a purchase,
+a delete. Do not put it on plain navigation: a confirmation page is one
+query away, and a placeholder flashed over it is noise.
+
+Two things to keep in mind:
+
+- The placeholder is one more API call, and it is only worth it when the
+  work behind it is slower than the call.
+- A `Run` action that throws is reported by `ActionRunner` in a **new**
+  message, which would strand yours on `loading ... ⏳` with no buttons.
+  A runnable that puts up a placeholder should catch `\Throwable`, log
+  it itself, and put a usable screen back — see `Extensions\Vpn\Action\Buy`.
+
 ---
 
 ## 10. Middleware

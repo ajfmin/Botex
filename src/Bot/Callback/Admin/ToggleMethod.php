@@ -6,6 +6,7 @@ use Botex\Bot\Admin\Section\TopUp;
 use Botex\Bot\Callback\CallbackInterface;
 use Botex\Bot\Callback\MatchesCallback;
 use Botex\Bot\Feeder;
+use Botex\Bot\Loading;
 use Botex\Bot\Middleware\IsAdmin;
 use Botex\Bot\TopUp\MethodState;
 use Botex\Bot\TopUp\PaymentMethods;
@@ -32,7 +33,8 @@ class ToggleMethod implements CallbackInterface, MatchesCallback
         private Bot $bot,
         private PaymentMethods $methods,
         private MethodState $state,
-        private Feeder $feeder
+        private Feeder $feeder,
+        private Loading $loading
     ) {
     }
 
@@ -89,6 +91,11 @@ class ToggleMethod implements CallbackInterface, MatchesCallback
 
             return;
         }
+
+        // An admin flipping three routes in a row should see each one
+        // land; the placeholder is what makes the second press land on
+        // a screen that has already caught up with the first.
+        $this->loading->show($update);
 
         $enabled = $this->state->toggle($key);
         $method = $this->methods->make($key);

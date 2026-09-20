@@ -9,6 +9,7 @@ use Botex\Bot\Callback\CallbackInterface;
 use Botex\Bot\Callback\MatchesCallback;
 use Botex\Bot\Conversation\FlowRunner;
 use Botex\Bot\Feeder;
+use Botex\Bot\Loading;
 use Botex\Bot\Middleware\IsAdmin;
 use Botex\Broadcast\BroadcastService;
 use Botex\Telegram\Bot;
@@ -35,7 +36,8 @@ class ManageBroadcast implements CallbackInterface, MatchesCallback
         private Bot $bot,
         private BroadcastService $broadcasts,
         private FlowRunner $runner,
-        private Feeder $feeder
+        private Feeder $feeder,
+        private Loading $loading
     ) {
     }
 
@@ -80,6 +82,13 @@ class ManageBroadcast implements CallbackInterface, MatchesCallback
 
             return;
         }
+
+        // Up before the transition, down again when the section redraws
+        // below. Both halves matter on this screen: an admin stopping a
+        // send that is still going wants to see that the press landed,
+        // and the buttons it takes away are the ones that would fight
+        // each other if pressed twice.
+        $this->loading->show($update);
 
         $notice = $this->apply($action, $id);
 
