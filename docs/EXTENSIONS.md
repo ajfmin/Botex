@@ -784,6 +784,9 @@ using `parseMode('HTML')`.
 | `static make(string $text): self` | no target yet — for `->action()` to fill in |
 | `static callback(string $text, ?string $callback = null): self` | callback data, **64 bytes max** (Telegram limit); pass `null` when `->action()` supplies the target |
 | `static url(string $text, string $url): self` | opens a link |
+| `static copy(string $text, string $payload): self` | copies `$payload` to the clipboard on the device; **256 characters max**, no press reaches the bot |
+| `static share(string $text, string $query = ''): self` | opens the chat picker and drops the bot's username plus `$query` into the chosen chat; needs inline mode enabled in BotFather |
+| `static webApp(string $text, string $url): self` | opens a Web App; **https only**, and only in a private chat with the bot |
 | `action(Run $run): self` | attach a Run target; nothing is persisted until `build()` |
 | `audience(Update\|int $audience): self` | who the button is shown to; optional for inline buttons |
 | `emoji(string $emojiId): self` | custom emoji id |
@@ -802,6 +805,7 @@ $markup = Keyboard::inline()
         InlineButton::callback('Cancel', 'shop:cancel'),
     )
     ->row(InlineButton::url('Help', 'https://example.com'))
+    ->row(InlineButton::copy('📋 Copy code', 'ABC123'))
     ->build();
 
 $this->bot->sendMessage('Pick one')->to($chatId)->replyMarkup($markup);
@@ -810,6 +814,11 @@ $this->bot->sendMessage('Pick one')->to($chatId)->replyMarkup($markup);
 Build keyboards in a dedicated class when they need dependencies —
 see `Extensions\Clock\Keyboard\ClockKeyboard`, whose buttons carry
 `->action(Run::...)` targets bound at `build()` time.
+
+**One target per button.** Telegram rejects a button carrying two of
+`callback_data`, `url`, `copy_text`, `switch_inline_query` and
+`web_app`, so pick the constructor that matches what the button does
+rather than chaining `->action()` onto a `copy()` or a `url()`.
 
 ### 7.4 Reading the update
 
