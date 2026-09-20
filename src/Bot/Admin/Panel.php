@@ -146,8 +146,8 @@ class Panel
 
         $this->bot->sendMessage(
             $items === null || $title === null
-                ? 'Admin menu is on the keyboard below.'
-                : $title::title() . ' is on the keyboard below.'
+            ? 'Admin menu is on the keyboard below.'
+            : $title::title() . ' is on the keyboard below.'
         )
             ->to($update->chatId())
             ->replyMarkup($this->menuKeyboard($items === null ? null : $section, $update))
@@ -234,6 +234,7 @@ class Panel
             return [];
         }
 
+        /** @var class-string<HasSubMenu> $section */
         $items = [];
 
         foreach ($section::menuItems() as $label => $screen) {

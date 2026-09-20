@@ -1517,7 +1517,13 @@ try {
             // from both working -- this one would take it, fail, and exit
             // -- but "Another worker holds the lease" is a confusing way
             // to be told that the thing you asked for is already running.
-            if (!$force && $service->unsupported() === null && $service->isActive()) {
+            //
+            // isSelf() first, and it is not optional: the unit's own
+            // ExecStart lands here, and systemd has already marked the
+            // unit active by the time it does. Without it the worker
+            // refuses to be itself, exits 0, and Restart=always turns
+            // the service into a loop that never runs a single job.
+            if (!$force && !$service->isSelf() && $service->unsupported() === null && $service->isActive()) {
                 echo 'The worker is already running as ' . $service->unitName() . '.' . PHP_EOL . PHP_EOL;
                 echo '  php bin/console jobs:service --restart   pick up new code' . PHP_EOL;
                 echo '  php bin/console jobs:service --logs      see what it is doing' . PHP_EOL;

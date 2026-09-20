@@ -154,6 +154,41 @@ class SystemdService
         return $this->systemctl(['is-active', $this->unitName()])['code'] === 0;
     }
 
+    /**
+     * Whether this very process is the worker the unit is running.
+     *
+     * The counterpart to isActive(), and the reason it cannot be asked
+     * on its own. A Type=simple unit is marked active the moment systemd
+     * forks ExecStart, so the worker it just started sees its own unit
+     * as active. A guard that only asks isActive() therefore refuses to
+     * start on the grounds that it is already running, exits 0, and
+     * Restart=always brings it straight back -- a restart loop in which
+     * every iteration looks, in the journal, like a clean start followed
+     * by "Deactivated successfully".
+     *
+     * The cgroup path names the unit that owns the process, which is the
+     * precise question: not "did systemd start me" but "am I inside my
+     * own unit". INVOCATION_ID is the fallback where that file cannot be
+     * read; it is set for every systemd service, so it can only be wrong
+     * in the harmless direction -- another unit shelling out to the
+     * worker would skip a friendly message and take the lease instead,
+     * which is the same outcome --force already gives.
+     */
+    public function isSelf(): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return false;
+        }
+
+        $cgroup = @file_get_contents('/proc/self/cgroup');
+
+        if (is_string($cgroup) && $cgroup !== '') {
+            return str_contains($cgroup, $this->unitName());
+        }
+
+        return trim((string) getenv('INVOCATION_ID')) !== '';
+    }
+
     /** Whether it comes back after a reboot. */
     public function isEnabled(): bool
     {
