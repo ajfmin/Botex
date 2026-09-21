@@ -417,7 +417,10 @@ class Panel
      */
     public function show(Update $update, string $text, array $keyboard = []): void
     {
-        if ($update->isCallback() && $update->messageId() !== null) {
+        // canEditText() and not isCallback(): a press from under a photo
+        // caption has a message id, but Telegram refuses to put text
+        // into a message that has none.
+        if ($update->canEditText() && $update->messageId() !== null) {
             $message = $this->bot->editMessage($text, (int) $update->messageId());
         } else {
             $message = $this->bot->sendMessage($text);

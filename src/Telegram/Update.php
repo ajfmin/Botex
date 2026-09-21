@@ -44,6 +44,31 @@ class Update
         return $this->data['callback_query']['id'] ?? null;
     }
 
+    /**
+     * Whether the message this press came from can be edited as text.
+     *
+     * editMessageText only works on a message that *has* text. A button
+     * sitting under a photo caption is on a message that has none, and
+     * Telegram answers "there is no text in the message to edit" --
+     * which the bot throws away, so the press looks like a dead button.
+     *
+     * Every screen in this bot edits in place when it can, so each of
+     * them has to ask this first now that a service can be handed over
+     * as the caption of its own QR. The honest answer for such a press
+     * is a new message, which is what the screens already do for a
+     * command or a keyboard tap.
+     */
+    public function canEditText(): bool
+    {
+        if (!$this->isCallback()) {
+            return false;
+        }
+
+        $message = $this->data['callback_query']['message'] ?? null;
+
+        return is_array($message) && ($message['text'] ?? null) !== null;
+    }
+
     public function fromId(): ?string
     {
         if ($this->isCallback()) {

@@ -59,7 +59,11 @@ class Loading
         $messageId = $update->messageId();
         $chatId = $update->chatId();
 
-        if (!$update->isCallback() || $messageId === null || $chatId === null) {
+        // canEditText() rather than isCallback(): a button under a photo
+        // caption has a message id and no text, and editing it is
+        // refused -- which would leave the placeholder undrawn and,
+        // worse, done() unable to clear it either.
+        if (!$update->canEditText() || $messageId === null || $chatId === null) {
             return false;
         }
 
@@ -88,7 +92,7 @@ class Loading
             return;
         }
 
-        $message = $update->isCallback() && $messageId !== null
+        $message = $update->canEditText() && $messageId !== null
             ? $this->bot->editMessage($text, $messageId)
             : $this->bot->sendMessage($text);
 
