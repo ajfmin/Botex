@@ -6,7 +6,6 @@ use Botex\Bot\Conversation\Prompt;
 use Botex\Bot\Conversation\RepeatableStep;
 use Botex\Bot\Conversation\Session;
 use Botex\Bot\Conversation\Step\TextStep;
-use Extensions\Feedback\Service\FeedbackService;
 
 /**
  * Walks the admin-defined questions one at a time.
@@ -20,11 +19,6 @@ class AskQuestions extends TextStep implements RepeatableStep
     public const KEY = 'answers';
 
     protected int $maxLength = 1000;
-
-    public function __construct(
-        private FeedbackService $feedback
-    ) {
-    }
 
     public static function name(): string
     {

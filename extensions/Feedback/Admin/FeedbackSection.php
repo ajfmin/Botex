@@ -3,7 +3,6 @@
 namespace Extensions\Feedback\Admin;
 
 use Botex\Bot\Admin\AdminSectionInterface;
-use Botex\Bot\Admin\Panel;
 use Botex\Telegram\Builders\Keyboard\InlineButton;
 use Botex\Telegram\Builders\Keyboard\Keyboard;
 use Botex\Telegram\Bot;

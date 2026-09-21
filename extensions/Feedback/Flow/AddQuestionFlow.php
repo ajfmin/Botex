@@ -2,7 +2,6 @@
 
 namespace Extensions\Feedback\Flow;
 
-use Botex\Bot\Admin\Panel;
 use Botex\Bot\Conversation\FlowInterface;
 use Botex\Bot\Conversation\Session;
 use Botex\Telegram\Bot;
