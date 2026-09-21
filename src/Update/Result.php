@@ -78,11 +78,14 @@ class Result
 
         if ($this->wasReset) {
             $lines[] = '  the baseline is now this release exactly';
+        }
 
-            if ($this->adoptionsDropped > 0) {
-                $lines[] = '  ' . $this->adoptionsDropped
-                    . ' adopted file(s) were overwritten; core:adopt again to keep new ones';
-            }
+        // Said for a force as well as a reset: either way the operator's
+        // version of those files is in the backup and nowhere else, and
+        // the adoption that was protecting them is gone.
+        if ($this->adoptionsDropped > 0) {
+            $lines[] = '  ' . $this->adoptionsDropped
+                . ' adopted file(s) were overwritten; core:adopt again to keep new ones';
         }
 
         if ($this->dependenciesChanged) {

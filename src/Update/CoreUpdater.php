@@ -379,6 +379,17 @@ class CoreUpdater
     {
         // Counted before anything is written, because the write is what
         // clears them.
+        //
+        // A forced update clears them too, but only for the files it
+        // actually overwrote. Leaving those records in place was a bug
+        // with no way out of it: the entry says "upstream was X and I
+        // diverged from it" while upstream's own newer copy is now on
+        // disk, so the *next* release touching that file compares
+        // against a hash two versions old, calls it a conflict, and
+        // refuses -- for a file the operator no longer has any change
+        // in. Forcing means "upstream wins here", and the record has to
+        // say so.
+        $overridden = $force && !$reset ? $plan->conflicts() : [];
         $adoptions = $reset ? count($this->inventory->kept()) : 0;
 
         // Re-checked here rather than trusted from update(), because this
@@ -488,6 +499,18 @@ class CoreUpdater
 
             if ($removed !== []) {
                 $this->inventory->forget($removed, $package->version());
+            }
+
+            // The adoptions this force just overrode. After the merge
+            // above, the recorded hash for each of these is the release's
+            // own, so dropping the kept entry leaves the file reading as
+            // clean -- which is exactly what it now is. An operator who
+            // wants their version back takes it out of the backup, puts
+            // it in place, and adopts it again; that adoption records
+            // *this* release as its upstream, and the next one compares
+            // against something true.
+            if ($overridden !== []) {
+                $adoptions = $this->inventory->release($overridden);
             }
 
         } catch (\Throwable $e) {
@@ -685,10 +708,17 @@ class CoreUpdater
         }
 
         if ($adopted !== []) {
-            // Re-adopting is not offered as a fix: it would re-record the
-            // same divergence against the same release and refuse again.
-            // Something has to give, and only the operator knows what.
-            $options[] = '  merge upstream\'s change into your version, then core:adopt again';
+            // Deliberately *not* "merge it and adopt again". Adopting a
+            // path that is already kept refreshes `mine` and leaves
+            // `upstream` where it was -- see Inventory::keep(), which
+            // has to work that way or the reference the next release is
+            // compared against would move every time the file is
+            // touched. So re-adopting re-records the same divergence
+            // against the same release and refuses again, forever. The
+            // only way to move `upstream` forward is to let this release
+            // land on the file first, which is what --force does.
+            $options[] = '  keep your version: --force, then restore it from the backup and core:adopt';
+            $options[] = '                     (--force clears the adoption, so that adopt records this release)';
         }
 
         return implode(PHP_EOL, [
