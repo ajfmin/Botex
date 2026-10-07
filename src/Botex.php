@@ -21,7 +21,7 @@ final class Botex
      * MUST be bumped in the same commit as any change to the published
      * core surface, or an install cannot tell whether it needs an update.
      */
-    public const VERSION = '1.5.6';
+    public const VERSION = '1.5.7';
 
     /** Lowest PHP this core is known to run on. */
     public const PHP_MINIMUM = '8.2.0';
