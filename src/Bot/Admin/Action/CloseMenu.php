@@ -2,6 +2,7 @@
 
 namespace Botex\Bot\Admin\Action;
 
+use Botex\Bot\Command\Start;
 use Botex\Bot\Action\RunContext;
 use Botex\Bot\Action\RunnableInterface;
 use Botex\Bot\Admin\Panel;
@@ -33,7 +34,8 @@ class CloseMenu implements RunnableInterface
 
     public function __construct(
         private Bot $bot,
-        private Panel $panel
+        private Panel $panel,
+        private Start $start
     ) {
     }
 
@@ -47,5 +49,6 @@ class CloseMenu implements RunnableInterface
             ->to($update->chatId())
             ->replyMarkup(Panel::hideKeyboard())
             ->execute();
+        $this->start->handle($update);
     }
 }

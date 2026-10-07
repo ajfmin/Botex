@@ -7,7 +7,7 @@ namespace Botex\Bot\Job;
  *
  * Raised at scheduling time, so the mistake surfaces in the code that
  * queued the job. The worker never throws this: a row whose handler has
- * since disappeared is paused, not fatal.
+ * since disappeared is deferred and retried, not fatal.
  */
 class UnknownJob extends \InvalidArgumentException
 {

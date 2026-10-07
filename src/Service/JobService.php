@@ -167,7 +167,7 @@ class JobService
             return false;
         }
 
-        return $this->jobs->setStatus($id, JobStatus::PENDING, Carbon::now());
+        return $this->jobs->requeue($id, Carbon::now());
     }
 
     /**
@@ -190,7 +190,7 @@ class JobService
             return false;
         }
 
-        return $this->jobs->setStatus($id, JobStatus::PENDING, Carbon::now());
+        return $this->jobs->requeue($id, Carbon::now());
     }
 
     public function cancel(int $id): bool
@@ -260,9 +260,7 @@ class JobService
         $existing = $this->jobs->findByKey($key);
 
         if ($existing) {
-            $existing->fill($attributes)->save();
-
-            return $existing;
+            return $this->overwrite($existing, $attributes);
         }
 
         try {
@@ -274,9 +272,42 @@ class JobService
                 throw $e;
             }
 
-            $existing->fill($attributes)->save();
-
-            return $existing;
+            return $this->overwrite($existing, $attributes);
         }
+    }
+
+    /**
+     * Rewrites a keyed row, leaving a live claim on it alone.
+     *
+     * Re-scheduling a job a worker is in the middle of used to clear its
+     * lock along with everything else. The worker's own outcome write is
+     * guarded on that lock, so it then found the row "taken", discarded
+     * a run that had succeeded, and logged a lapsed lease that never
+     * happened. So the claim -- status, owner, lease, start, this
+     * attempt -- stays exactly as the worker left it, and the rest of the
+     * request lands now. The new next_run_at is also what tells the
+     * worker this happened: its outcome write is guarded on the due time
+     * it claimed, so instead of re-arming from its stale copy it only
+     * releases the lock (JobRepository::release()), and the request
+     * stands as written.
+     *
+     * A claim whose lease has lapsed belongs to a dead worker and is
+     * overwritten as before.
+     */
+    private function overwrite(Job $existing, array $attributes): Job
+    {
+        if ($existing->isHeld()) {
+            unset(
+                $attributes['status'],
+                $attributes['locked_by'],
+                $attributes['lease_until'],
+                $attributes['started_at'],
+                $attributes['attempts']
+            );
+        }
+
+        $existing->fill($attributes)->save();
+
+        return $existing;
     }
 }

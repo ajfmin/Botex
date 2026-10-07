@@ -92,6 +92,15 @@ class Job extends Model
         return $this->lease_until !== null && $this->lease_until->isPast();
     }
 
+    /** True while a live worker holds this job: claimed, lease not lapsed. */
+    public function isHeld(): bool
+    {
+        return $this->status() === JobStatus::RUNNING
+            && $this->locked_by !== null
+            && $this->lease_until !== null
+            && $this->lease_until->isFuture();
+    }
+
     public function isDue(): bool
     {
         return $this->next_run_at !== null && !$this->next_run_at->isFuture();

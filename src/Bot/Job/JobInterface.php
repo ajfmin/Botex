@@ -19,7 +19,7 @@ interface JobInterface
      * The stable name stored on the row.
      *
      * Renaming this orphans jobs already scheduled, which the worker then
-     * pauses rather than runs.
+     * keeps deferring rather than runs.
      */
     public static function name(): string;
 

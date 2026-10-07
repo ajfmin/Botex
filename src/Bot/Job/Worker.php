@@ -100,6 +100,7 @@ class Worker
 
         $this->listenForSignals();
         $this->log("Worker {$this->workerId} started.", context: ['worker' => $this->workerId]);
+        $this->armPrune();
 
         $startedAt = Carbon::now();
         $this->ran = 0;
@@ -212,11 +213,13 @@ class Worker
             // it is the wrong default for the commonest cause of this.
             //
             // Deferring costs one query per grace period. A row whose
-            // extension is really gone is deleted by ext:remove.
-            $this->jobs->setStatus(
+            // extension is really gone is deleted by ext:remove. It also
+            // hands back the attempt the claim counted, or every deferral
+            // would eat into the retries the job has when it does run.
+            $this->jobs->defer(
                 (int) $job->id,
-                JobStatus::PENDING,
-                Carbon::now()->addSeconds(self::MISSING_HANDLER_GRACE)
+                Carbon::now()->addSeconds(self::MISSING_HANDLER_GRACE),
+                $this->workerId
             );
             $this->log(
                 "Job #{$job->id} ({$job->handlerKey()}) has no handler here; retrying in "
@@ -242,7 +245,10 @@ class Worker
 
             $handler->handle($context);
         } catch (\Throwable $e) {
-            $this->record(fn () => $this->failed($job, $e), $job);
+            $this->record(
+                fn () => $this->failed($job, $e, (int) round((microtime(true) - $startedAt) * 1000)),
+                $job
+            );
 
             return true;
         }
@@ -310,6 +316,43 @@ class Worker
         return false;
     }
 
+    /**
+     * Makes sure core's janitor job exists, or is gone when switched off.
+     *
+     * It was in the allowlist and nothing ever scheduled it, so finished
+     * rows were kept for ever. A janitor has no moment of its own to be
+     * armed at -- the broadcast runner arms on the first broadcast -- but
+     * the worker starting is one, and ensure() makes that free on every
+     * start after the first: an active row is left exactly as it is.
+     *
+     * Never fatal. A worker that could not arm its own cleanup should
+     * still run everybody else's jobs.
+     */
+    private function armPrune(): void
+    {
+        try {
+            if (PruneJobs::keepSeconds($this->config) <= 0) {
+                $existing = $this->service->findByKey(PruneJobs::KEY);
+
+                if ($existing !== null) {
+                    $this->service->cancel((int) $existing->id);
+                }
+
+                return;
+            }
+
+            $this->service->ensure(
+                JobRequest::to(
+                    JobRequest::CORE,
+                    PruneJobs::name(),
+                    Schedule::every(PruneJobs::INTERVAL)->startingNow()
+                )->keyed(PruneJobs::KEY)
+            );
+        } catch (\Throwable $e) {
+            $this->log('Could not arm the job-table prune: ' . $e->getMessage(), Level::Warning, [], $e);
+        }
+    }
+
     /** Asks the loop to finish the current job and stop. */
     public function stop(): void
     {
@@ -335,7 +378,17 @@ class Worker
             $nextRun = $job->schedule()->nextAfter(Carbon::now());
         }
 
-        if (!$this->jobs->complete((int) $job->id, $nextRun, $durationMs, $this->workerId)) {
+        if (!$this->jobs->complete((int) $job->id, $nextRun, $durationMs, $this->workerId, $job->next_run_at)) {
+            if ($this->jobs->release((int) $job->id, $this->workerId, $durationMs)) {
+                $this->log(
+                    "Job #{$job->id} ({$job->handlerKey()}) ok in {$durationMs}ms;"
+                        . ' it was re-scheduled while it ran, so the new schedule stands.',
+                    context: $this->about($job) + ['duration_ms' => $durationMs]
+                );
+
+                return;
+            }
+
             $this->lostJob($job, 'succeeded');
 
             return;
@@ -366,24 +419,34 @@ class Worker
      * a person noticing would bring it back. The failure is still counted
      * and still on the row for anyone looking.
      */
-    private function failed(\Botex\Model\Job $job, \Throwable $e): void
+    private function failed(\Botex\Model\Job $job, \Throwable $e, int $durationMs): void
     {
         $nextRun = $this->service->retryAt($job);
         $retrying = $nextRun !== null;
         $rescheduled = false;
+        $replaced = false;
 
         if (!$retrying && $job->repeats() && !$this->isLastRun($job)) {
             $nextRun = $job->schedule()->nextAfter(Carbon::now());
             $rescheduled = $nextRun !== null;
         }
 
-        if (!$this->jobs->fail((int) $job->id, $e->getMessage(), $nextRun, $this->workerId, $rescheduled)) {
-            $this->lostJob($job, 'failed with: ' . $e->getMessage());
+        if (!$this->jobs->fail((int) $job->id, $e->getMessage(), $nextRun, $this->workerId, $rescheduled, $job->next_run_at)) {
+            // Re-scheduled while it ran: the failure is still recorded and
+            // still logged as one, but the retry this run would have
+            // planned gives way to what was asked for.
+            if (!$this->jobs->release((int) $job->id, $this->workerId, $durationMs, $e->getMessage())) {
+                $this->lostJob($job, 'failed with: ' . $e->getMessage());
 
-            return;
+                return;
+            }
+
+            $replaced = true;
+            $nextRun = null;
         }
 
         $outcome = match (true) {
+            $replaced => '; it was re-scheduled while it ran, so the new schedule stands',
             $retrying => ', retry ' . $nextRun?->toDateTimeString(),
             $rescheduled => ', out of attempts; back on schedule ' . $nextRun?->toDateTimeString(),
             default => ', giving up',
@@ -417,6 +480,36 @@ class Worker
      */
     private function lostJob(\Botex\Model\Job $job, string $outcome): void
     {
+        // Not every lost row is a lapsed lease. Cancelling or pausing a
+        // job while it runs takes the row away too, and blaming the lease
+        // for that sends whoever reads the log off to tune a setting that
+        // was never the problem.
+        //
+        // Only those two count: a deleted row, or a paused one. "Nobody
+        // holds it" is not enough on its own -- a worker that reclaimed a
+        // lapsed lease and already finished leaves the row unheld too,
+        // and that is exactly the case the lease warning is for. A failed
+        // lookup falls through to that warning, as before.
+        try {
+            $now = $this->jobs->find((int) $job->id);
+            $released = $now === null || $now->status() === JobStatus::PAUSED;
+        } catch (\Throwable) {
+            $now = null;
+            $released = false;
+        }
+
+        if ($released) {
+            $this->log(
+                "Job #{$job->id} ({$job->handlerKey()}) {$outcome}, but it was "
+                    . ($now === null ? 'deleted' : 'paused')
+                    . ' while it ran; result discarded.',
+                Level::Notice,
+                $this->about($job)
+            );
+
+            return;
+        }
+
         // Warning rather than error: this worker did its work, but a
         // duplicate of it ran somewhere else, which is exactly what the
         // lease exists to prevent.
